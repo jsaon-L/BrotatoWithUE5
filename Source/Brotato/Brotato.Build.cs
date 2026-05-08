@@ -18,7 +18,8 @@ public class Brotato : ModuleRules
 			"GameplayAbilities",
 			"GameplayTasks",
 			"GameplayTags",
-			"UMG"
+			"UMG",
+			"PaperZD"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
