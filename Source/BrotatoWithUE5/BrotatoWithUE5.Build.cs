@@ -2,30 +2,15 @@
 
 using UnrealBuildTool;
 
-public class Brotato : ModuleRules
+public class BrotatoWithUE5 : ModuleRules
 {
-	public Brotato(ReadOnlyTargetRules Target) : base(Target)
+	public BrotatoWithUE5(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[]
-		{
-			"Core", 
-			"CoreUObject", 
-			"Engine", 
-			"InputCore", 
-			"EnhancedInput",
-			"GameplayAbilities",
-			"GameplayTasks",
-			"GameplayTags",
-			"UMG",
-			"PaperZD"
-		});
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
 
-		PrivateDependencyModuleNames.AddRange(new string[]
-		{
-			"AIModule" 
-		});
+		PrivateDependencyModuleNames.AddRange(new string[] {  });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
