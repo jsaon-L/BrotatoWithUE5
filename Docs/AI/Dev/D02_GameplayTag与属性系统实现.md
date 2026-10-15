@@ -7,7 +7,12 @@
 **本章解决一个核心问题**：Brotato 的三层属性模型
 $$\text{FinalStat}(s)=\big(E[s]+T[s]+L[s]\big)\cdot\Big(1+\frac{E[\text{gain}\_s]}{100}\Big)$$
 如何**无损**映射到 GAS 的 Aggregator
-$$\text{CurrentValue}=\big(\text{Base}+\textstyle\sum\text{Additive}\big)\times\textstyle\prod\text{Multiplicative}$$
+$$\text{CurrentValue}=\frac{\big(\text{Base}+\textstyle\sum\text{Additive}\big)\times\big(1+\textstyle\sum(Mul_i-1)\big)}{1+\textstyle\sum(Div_i-1)}$$
+
+> ⚠️ 注意：UE 的 Aggregator **不是** `Π Multiplicative`。
+> `FAggregatorModChannel::SumMods(Bias)` 中 `Bias=1`，多个 Multiplicative 是 **连加 `(1+Σ(mᵢ-1))`**，不是连乘。
+> 因此**每个属性只允许挂一条 gain 乘数**（`Coefficient=0.01`、`PreMultiplyAdditive=100`，见 §4.4），
+> 挂第二条就会与「乘区」语义分叉。这条约束要写进 Code Review 清单。
 
 **结论：数学上完全等价**，只要把 `gain_*` 做成 Multiplicative 的 AttributeBased Modifier。详见 §4。
 
@@ -23,7 +28,7 @@ $$\text{CurrentValue}=\big(\text{Base}+\textstyle\sum\text{Additive}\big)\times\
 | `Brotato.State.*` | 状态标记，驱动逻辑与表现 | ini |
 | `Brotato.Effect.*` | GE 分类，用于**批量移除** | ini |
 | `Brotato.Ability.*` | Ability 标签 / 阻断 / 事件触发 | ini |
-| `Brotato.Cue.*` | GameplayCue 路径 | ini（必须与 Cue 资产路径一致） |
+| `GameplayCue.Brotato.*` | GameplayCue（★ 必须位于 `GameplayCue.` 根下，否则 CueManager 不路由） | ini |
 | `Brotato.Data.*` | SetByCaller 键 | ini |
 | `Brotato.Rule.*` | 规则开关（对应原作 bool 型 effects） | ini |
 | `Brotato.Hook.*` | HookRegistry 槽位键 | ini |
@@ -112,40 +117,55 @@ $$\text{CurrentValue}=\big(\text{Base}+\textstyle\sum\text{Additive}\big)\times\
 +GameplayTagList=(Tag="Brotato.Ability.Passive.OnWaveEnd")
 +GameplayTagList=(Tag="Brotato.Ability.Passive.OnConsumable")
 
-; ──────────── Cue（路径必须与 Content/GAS/Cues 一致） ────────────
-+GameplayTagList=(Tag="Brotato.Cue.Hit.Normal")
-+GameplayTagList=(Tag="Brotato.Cue.Hit.Crit")
-+GameplayTagList=(Tag="Brotato.Cue.Hit.Dodge")
-+GameplayTagList=(Tag="Brotato.Cue.Hit.Nullified")
-+GameplayTagList=(Tag="Brotato.Cue.Player.Damaged")
-+GameplayTagList=(Tag="Brotato.Cue.Player.Healed")
-+GameplayTagList=(Tag="Brotato.Cue.Player.LevelUp")
-+GameplayTagList=(Tag="Brotato.Cue.Player.Died")
-+GameplayTagList=(Tag="Brotato.Cue.Enemy.Damaged")
-+GameplayTagList=(Tag="Brotato.Cue.Enemy.Died")
-+GameplayTagList=(Tag="Brotato.Cue.Weapon.MeleeSwing")
-+GameplayTagList=(Tag="Brotato.Cue.Weapon.RangedFire")
-+GameplayTagList=(Tag="Brotato.Cue.Explosion")
-+GameplayTagList=(Tag="Brotato.Cue.Burning")
-+GameplayTagList=(Tag="Brotato.Cue.StatGained")
-+GameplayTagList=(Tag="Brotato.Cue.StatLost")
-+GameplayTagList=(Tag="Brotato.Cue.Harvested")
-+GameplayTagList=(Tag="Brotato.Cue.Screenshake.Small")
-+GameplayTagList=(Tag="Brotato.Cue.Screenshake.Large")
+; ──────────── Cue ────────────
+; ★ GameplayCueManager 只路由 `GameplayCue.` 根下的 Tag，`Brotato.Cue.*` 会静默不播。
+; Cue 资产通过 Notify 上的 GameplayCueTag 属性绑定到 Tag；资产搜索路径由
+; DefaultGame.ini 的 [/Script/GameplayAbilities.AbilitySystemGlobals] GameplayCueNotifyPaths 指定（见 D00 §4.2），
+; 并不是“按 Tag 路径自动发现”。
++GameplayTagList=(Tag="GameplayCue.Brotato.Hit.Normal")
++GameplayTagList=(Tag="GameplayCue.Brotato.Hit.Crit")
++GameplayTagList=(Tag="GameplayCue.Brotato.Hit.Dodge")
++GameplayTagList=(Tag="GameplayCue.Brotato.Hit.Nullified")
++GameplayTagList=(Tag="GameplayCue.Brotato.Player.Damaged")
++GameplayTagList=(Tag="GameplayCue.Brotato.Player.Healed")
++GameplayTagList=(Tag="GameplayCue.Brotato.Player.LevelUp")
++GameplayTagList=(Tag="GameplayCue.Brotato.Player.Died")
++GameplayTagList=(Tag="GameplayCue.Brotato.Enemy.Damaged")
++GameplayTagList=(Tag="GameplayCue.Brotato.Enemy.Died")
++GameplayTagList=(Tag="GameplayCue.Brotato.Weapon.MeleeSwing")
++GameplayTagList=(Tag="GameplayCue.Brotato.Weapon.RangedFire")
++GameplayTagList=(Tag="GameplayCue.Brotato.Explosion")
++GameplayTagList=(Tag="GameplayCue.Brotato.Burning")
++GameplayTagList=(Tag="GameplayCue.Brotato.StatGained")
++GameplayTagList=(Tag="GameplayCue.Brotato.StatLost")
++GameplayTagList=(Tag="GameplayCue.Brotato.Harvested")
++GameplayTagList=(Tag="GameplayCue.Brotato.Screenshake.Small")
++GameplayTagList=(Tag="GameplayCue.Brotato.Screenshake.Large")
+
+; ──────────── 冷却槽位 / 状态补充（D01/D03/D04/D05 使用，原字典缺失，现补全） ────────────
++GameplayTagList=(Tag="Brotato.State.LifestealCd")
++GameplayTagList=(Tag="Brotato.State.Boss.Phase0")           ; …Phase{N}，N 由 DT_BossStates 行数决定
++GameplayTagList=(Tag="Brotato.Cooldown.Weapon.0")           ; …Weapon.5，6 槽各一个，供 UI 与 GetCooldownTags 使用
++GameplayTagList=(Tag="Brotato.Ability.Blocked.CannotAttackWhileMoving")
 
 ; ──────────── Data（SetByCaller 键） ────────────
+; ★ 通用键 Data.Damage / Data.Duration / Data.Cooldown / Data.Period 供燃烧、冷却、Buff 复用；
+;   原 Data.BurnDamage / Data.BurnDuration 与实际用法（D03 用 Data.Damage / Data.Duration）不一致，已删除。
 +GameplayTagList=(Tag="Brotato.Data.Damage")
++GameplayTagList=(Tag="Brotato.Data.Duration")
++GameplayTagList=(Tag="Brotato.Data.Cooldown")
++GameplayTagList=(Tag="Brotato.Data.Period")
 +GameplayTagList=(Tag="Brotato.Data.Healing")
 +GameplayTagList=(Tag="Brotato.Data.CritChance")
 +GameplayTagList=(Tag="Brotato.Data.CritDamage")
 +GameplayTagList=(Tag="Brotato.Data.KnockbackAmount")
-+GameplayTagList=(Tag="Brotato.Data.BurnDamage")
-+GameplayTagList=(Tag="Brotato.Data.BurnDuration")
 +GameplayTagList=(Tag="Brotato.Data.BypassInvincibility")
 +GameplayTagList=(Tag="Brotato.Data.NotDodgeable")
 +GameplayTagList=(Tag="Brotato.Data.NoArmor")
 
-; ──────────── Rule（21 个开关，对应原作 bool effects） ────────────
+; ──────────── Rule（★ 19 个 bool 开关，对应原作 bool 型 effects） ────────────
+; 注意：`trees_start_wave`、`minimum_weapons_in_shop`（计数）、`heal_on_crit_kill`（暴击击杀回血概率，单位 %）
+; 是**数值型**（见 Docs/02 §2 数值表），不是开关，不要放进本组，应作为 Attribute.Secondary.* 建模。
 +GameplayTagList=(Tag="Brotato.Rule.NoMeleeWeapons")
 +GameplayTagList=(Tag="Brotato.Rule.NoRangedWeapons")
 +GameplayTagList=(Tag="Brotato.Rule.NoMinRange")
@@ -163,13 +183,10 @@ $$\text{CurrentValue}=\big(\text{Base}+\textstyle\sum\text{Additive}\big)\times\
 +GameplayTagList=(Tag="Brotato.Rule.TreeTurrets")
 +GameplayTagList=(Tag="Brotato.Rule.SpecialEnemiesLastWave")
 +GameplayTagList=(Tag="Brotato.Rule.UpgradedBaits")
-+GameplayTagList=(Tag="Brotato.Rule.HealOnCritKill")
-+GameplayTagList=(Tag="Brotato.Rule.MinimumWeaponsInShop")
 +GameplayTagList=(Tag="Brotato.Rule.ExtraEnemiesNextWave")
 +GameplayTagList=(Tag="Brotato.Rule.ExtraLootAliensNextWave")
-+GameplayTagList=(Tag="Brotato.Rule.TreesStartWave")
 
-; ──────────── Hook（39 个槽，全表见 D03 §5.3） ────────────
+; ──────────── Hook（40 个键，全表见 D03 §5.3） ────────────
 +GameplayTagList=(Tag="Brotato.Hook.DmgWhenPickupGold")
 ; …
 
@@ -191,31 +208,64 @@ $$\text{CurrentValue}=\big(\text{Base}+\textstyle\sum\text{Additive}\big)\times\
 +GameplayTagList=(Tag="Brotato.Set.Unarmed")
 ```
 
-### 1.3 C++ 访问（禁止字面量）
+### 1.3 C++ 访问（禁止字面量，★ 用 UE 原生声明宏）
 
 ```cpp
-// BrotatoGAS/Public/BrotatoGameplayTags.h
-struct BROTATOGAS_API FBrotatoTags
+// BrotatoGAS/Public/BrotatoNativeTags.h
+// ★ 与 Docs/00 §3.4 一致：Tag 用引擎原生宏在编译期声明，不走 ini + RequestGameplayTag。
+//   好处：拼错在编译期报错；不需要在 StartupModule 里做字符串解析；不依赖 ini 加载顺序。
+#pragma once
+#include "NativeGameplayTags.h"
+
+namespace BrotatoTags
 {
-    static const FBrotatoTags& Get() { return Instance; }
-
-    FGameplayTag Attribute_Primary_MaxHp;
-    FGameplayTag Attribute_Primary_Armor;
+    // Attribute
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Attribute_Primary_MaxHp);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Attribute_Primary_Armor);
     // … 全部
-    FGameplayTag State_Invincible;
-    FGameplayTag Effect_Lifetime_Wave;
-    FGameplayTag Effect_Lifetime_Linked;
-    FGameplayTag Data_Damage;
-    FGameplayTag Rule_CanAttackWhileMoving;
-    // …
-
-    static void InitializeNativeTags();   // 在模块 StartupModule 调用
-private:
-    static FBrotatoTags Instance;
-};
+    // State
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Invincible);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_LifestealCd);
+    // Effect
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Effect_Lifetime_Wave);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Effect_Lifetime_Linked);
+    // Data / Rule
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Damage);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Cooldown);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Duration);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Period);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Rule_CanAttackWhileMoving);
+}
 ```
 
-`InitializeNativeTags()` 内用 `UGameplayTagsManager::Get().RequestGameplayTag(FName("..."), /*ErrorIfNotFound*/ true)` 逐个解析，**任何拼写错误在启动时立即 assert**。
+```cpp
+// BrotatoGAS/Private/BrotatoNativeTags.cpp
+#include "BrotatoNativeTags.h"
+
+namespace BrotatoTags
+{
+    UE_DEFINE_GAMEPLAY_TAG(Attribute_Primary_MaxHp, "Brotato.Attribute.Primary.MaxHp");
+    UE_DEFINE_GAMEPLAY_TAG(Attribute_Primary_Armor, "Brotato.Attribute.Primary.Armor");
+    UE_DEFINE_GAMEPLAY_TAG(State_Invincible,        "Brotato.State.Invincible");
+    UE_DEFINE_GAMEPLAY_TAG(State_LifestealCd,       "Brotato.State.LifestealCd");
+    UE_DEFINE_GAMEPLAY_TAG(Data_Damage,             "Brotato.Data.Damage");
+    UE_DEFINE_GAMEPLAY_TAG(Data_Cooldown,           "Brotato.Data.Cooldown");
+    UE_DEFINE_GAMEPLAY_TAG(Data_Duration,           "Brotato.Data.Duration");
+    UE_DEFINE_GAMEPLAY_TAG(Data_Period,             "Brotato.Data.Period");
+    // …
+}
+```
+
+**三种写法的取舍（全工程只允许前两种）**：
+
+| 写法 | 场景 |
+|---|---|
+| `BrotatoTags::Data_Damage` | ✅ 默认写法。编译期常量，可在**任何地方**使用，包括 CDO 构造函数 |
+| `UE_DEFINE_GAMEPLAY_TAG_STATIC` | ✅ 只在本文件内使用的私有 Tag |
+| `FBrotatoTags::Get().Xxx` | ❌ **废弃**。它是运行时单例，在 CDO 构造期取用存在 Tag 管理器尚未初始化的顺序风险 |
+
+> `DefaultGameplayTags.ini` / `DT_GameplayTags` 只用于**策划需在编辑器里随时增删的标签**（如敌人分组、Boss 阶段），
+> 不用于上述任何核心 Tag。
 
 ### 1.4 `DT_TagAttributeMap`（Tag → FGameplayAttribute）
 
@@ -403,7 +453,7 @@ public:
 | `gain_*` 乘区 | **Infinite GE + Multiplicative + AttributeBased 非快照** | 开局 Apply，永不移除（§4） |
 | `hp_cap` / `dodge_cap` / `speed_cap` / `weapon_slot` | **Infinite GE + `EGameplayModOp::Override`** | 同永久层 |
 | 规则开关（bool） | **Loose GameplayTag**（`Rule.*`） | `AddLooseGameplayTag` / `Remove` |
-| 数组钩子槽（39） | **`UBrotatoHookRegistry`**（非 GAS，见 D03 §5） | `FGuid` 精确移除 |
+| 数组钩子槽（40） | **`UBrotatoHookRegistry`**（非 GAS，见 D03 §5） | `FGuid` 精确移除 |
 
 ### 3.1 为什么三层相加后只乘一次 gain
 

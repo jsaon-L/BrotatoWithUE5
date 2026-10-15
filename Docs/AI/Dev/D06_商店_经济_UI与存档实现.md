@@ -97,8 +97,8 @@ RunSubsystem->SnapshotAccessibility(Settings.EnemyScaling);   // 开局快照，
 
 | 对象 | 暂停时 | 实现 |
 |---|---|---|
-| `UBrotatoSimSubsystem` | **停止全部模拟阶段** | `SetPaused(true)`；配合 `UGameplayStatics::SetGamePaused` |
-| 输入服务 / 光标管理 | **继续** | `bTickEvenWhenPaused = true`；`IA_*` 设 `bExecuteWhenPaused` |
+| `UBrotatoSimSubsystem` | **停止全部模拟阶段** | 仅调用 `UGameplayStatics::SetGamePaused(true)`；`UTickableWorldSubsystem` 暂停时本就不 Tick，**不要**再自维护 `SetPaused/bPaused`（09 §2.1 已删除） |
+| 输入服务 / 光标管理 | **继续** | Actor：`PrimaryActorTick.bTickEvenWhenPaused = true`（`FTickableGameObject` 则重写 `IsTickableWhenPaused()`）；`IA_*` 设 `bTriggerWhenPaused` |
 | SFX / 音乐 | **继续** | Submix 不暂停；UI 音 `bIsUISound = true` |
 | 暂停菜单 UI | **继续** | CommonUI + `WidgetAnimation` |
 | Niagara 特效 | **暂停** | 默认行为 |
@@ -119,41 +119,52 @@ TArray<FShopSlot> UBrotatoShopSubsystem::GetShopItems(int32 Wave)
     const int32 Number = BrotatoConst::NbShopItems;           // 4
 
     // ① 武器保底数
+    // ★ 保底数 **不扣** 锁定武器；比较时用「新增 + 锁定」（item_service.gd:131-158：`nb_weapons_added + nb_locked_weapons < nb_weapons_guaranteed`）。
+    //   旧版既把保底数减去锁定数、又用含锁定武器的 WeaponsMade 比较 → 锁定武器被重复扣除，保底武器偏少。
     int32 Guaranteed = (Wave <= 2) ? 2 : (Wave <= 5) ? 1 : 0;
     Guaranteed = FMath::Max(Guaranteed, (int32)Snapshot.MinimumWeaponsInShop);
-    Guaranteed -= CountLockedWeapons();                       // ★ 锁定武器计入保底额
+    const int32 LockedWeapons = CountLockedWeapons();
 
-    // ③ 去重集合：本次已生成 ∪ 上一次商店列表
+    // ③ 去重集合：★ 只含「上一次展示的商店列表」+「本次新生成」，**每次调用重新赋值**，不跨调用累积。
+    //   旧版 `PreviousShopItemIds = Excluded` 会把历次生成都累加进去，越刷越排除（原作 shop.gd:242 只传上一次的列表）。
+    //   锁定项不加入 Excluded（它们走 OwnsItemIncludingLocked 的 owned 判定，见 §2.3）。
     TSet<FName> Excluded = PreviousShopItemIds;
     TArray<FShopSlot> Out;
 
     // 锁定项先填入
     for (const FLockedShopItem& L : RunSubsystem->GetLockedShopItems())
-    { Out.Add({L.Data, L.WaveValue, /*bLocked*/true}); Excluded.Add(L.Data->MyId); }
+        Out.Add({L.Data, L.WaveValue, /*bLocked*/true});
 
-    int32 WeaponsMade = CountWeapons(Out);
-    while (Out.Num() < Number)
+    int32 WeaponsMade = 0;                                        // ★ 仅统计本次新增，不含锁定
+    TArray<FShopSlot> Fresh;
+    while (Out.Num() + Fresh.Num() < Number)
     {
         // ② 每格类型判定
         EBrotatoCategory Type;
-        if (Snapshot.WeaponSlot <= 0)                       Type = EBrotatoCategory::Item;
-        else if (Wave <= 2)  Type = (WeaponsMade < Guaranteed) ? EBrotatoCategory::Weapon : EBrotatoCategory::Item;
+        const bool bNeedMore = (WeaponsMade + LockedWeapons) < Guaranteed;
+        if (Wave <= 2)  Type = bNeedMore ? EBrotatoCategory::Weapon : EBrotatoCategory::Item;
         else if (HasPendingGuaranteedItem())                Type = EBrotatoCategory::Item;   // 强制该 id
-        else Type = (Rng.ChanceSuccess(BrotatoConst::ChanceWeapon) || WeaponsMade < Guaranteed)
+        else Type = (Rng.ChanceSuccess(BrotatoConst::ChanceWeapon) || bNeedMore)
                   ? EBrotatoCategory::Weapon : EBrotatoCategory::Item;
+        if (Type == EBrotatoCategory::Weapon) ++WeaponsMade;      // ★ 原作先计数、后因 weapon_slot<=0 改成 Item（保留该怪癖以对齐保底行为）
+        if (Snapshot.WeaponSlot <= 0) Type = EBrotatoCategory::Item;
 
         const EBrotatoTier Tier = ItemService->GetTierFromWave(Wave, Snapshot.Luck);
         const UBrotatoItemParentData* D = (Type == EBrotatoCategory::Weapon)
             ? PickWeapon(Tier, Excluded) : PickItem(Tier, Excluded);
         if (!D) break;
-        Excluded.Add(D->MyId);
-        if (Type == EBrotatoCategory::Weapon) ++WeaponsMade;
-        Out.Add({D, Wave, false});
+        Excluded.Add(D->MyId);                                    // 本次内去重
+        Fresh.Add({D, Wave, false});
     }
-    PreviousShopItemIds = Excluded;
+    Out.Append(Fresh);
+    // ★ 下一次调用的「上一次列表」= 本次最终展示列表（重新赋值，不累积）
+    PreviousShopItemIds.Reset();
+    for (const FShopSlot& S : Out) PreviousShopItemIds.Add(S.Data->MyId);
     return Out;
 }
 ```
+
+> 勘误来源：三处与源码不符 —— ① 保底数重复扣除；② `PreviousShopItemIds` 累积；③ `PickWeapon` 在倾向过滤之后才剔除 `Excluded`（见 §2.2 的顺序修正）。
 
 常量（`item_service.gd:20-28`）：
 
@@ -180,20 +191,24 @@ const UBrotatoWeaponData* UBrotatoShopSubsystem::PickWeapon(EBrotatoTier Tier, c
         (int32)Snapshot.MinWeaponTier, (int32)Snapshot.MaxWeaponTier);
     TArray<const UBrotatoWeaponData*> Pool = ItemService->GetWeaponPool(ClampedTier);
 
+    // ★ 顺序勘误：原作 item_service.gd:202-205 **先剔除 Excluded**，再做 melee/ranged 与倾向过滤，
+    //   这样「倾向过滤是否还有可选」的判断是在已去重的池上进行的。旧版放在最后，会让倾向过滤命中已展示的武器后被清空、落入 Fallback。
+    Pool.RemoveAll([&](auto* W){ return Excluded.Contains(W->MyId); });
+
     if (HasRule(Rule_NoMeleeWeapons))  Pool.RemoveAll(IsMelee);
     if (HasRule(Rule_NoRangedWeapons)) Pool.RemoveAll(IsRanged);
 
-    if (RandWanted < BrotatoConst::ChanceSameWeapon)
+    // ★ 倾向过滤仅在玩家已持有武器时才进行（item_service.gd:225 `if RunData.weapons.size() > 0`）
+    if (RunSubsystem->GetWeapons().Num() > 0 && RandWanted < BrotatoConst::ChanceSameWeapon)
     {   // 仅保留玩家已持有同 weapon_id 的武器（若有）
         auto F = Pool.FilterByPredicate([&](auto* W){ return RunSubsystem->HasWeaponId(W->WeaponId); });
         if (F.Num() > 0) Pool = MoveTemp(F);
     }
-    else if (RandWanted < ChanceSameSet)
+    else if (RunSubsystem->GetWeapons().Num() > 0 && RandWanted < ChanceSameSet)
     {   // 仅保留与玩家武器共享职业的武器（若有）
         auto F = Pool.FilterByPredicate([&](auto* W){ return RunSubsystem->SharesAnySet(W); });
         if (F.Num() > 0) Pool = MoveTemp(F);
     }
-    Pool.RemoveAll([&](auto* W){ return Excluded.Contains(W->MyId); });
     return Pool.Num() > 0 ? Rng.RandElement(Pool) : FallbackPick(ClampedTier);
 }
 ```
@@ -252,32 +267,65 @@ const UBrotatoItemData* UBrotatoShopSubsystem::PickItem(EBrotatoTier Tier, const
 ### 2.5 重掷
 
 ```cpp
-void UBrotatoShopSubsystem::Reroll()
+// ★ 对齐 shop.gd:254-266 `set_reroll_button_price`：重掷价格是「**提前算好并展示**」的，
+//   且**预计算这一步本身就消耗免费次数 / 推进 LastRerollPrice**：
+//     - 进店（含读档以外）与每次重掷成功后各调用一次，算出的是「下一次重掷要付的价」；
+//     - 免费次数在预计算时就 -1（而不是点击时）；
+//     - LastRerollPrice 在预计算时推进（付费分支）。
+//   旧版把定价放在 Reroll() 内 → 进店首价无从判定，U01「默认焦点」规则无法执行，且免费次数/价格推进的时机与原作偏移一格。
+void UBrotatoShopSubsystem::SetRerollButtonPrice()
 {
-    if (RunSubsystem->GetLockedShopItems().Num() >= BrotatoConst::NbShopItems) return;
-
     if (FreeRerolls > 0)
     {
-        RerollPrice = 0; --FreeRerolls;
-        RunSubsystem->AddTracked("item_dangerous_bunny", LastRerollPrice);
-        // ★ 免费重掷不推进 LastRerollPrice
+        RerollPrice = 0;
+        --FreeRerolls;
+        if (ShopItems.Num() != 0)                                 // 清空商店触发的预计算不记 bunny
+            RunSubsystem->AddTracked("item_dangerous_bunny", LastRerollPrice);
+        // ★ 免费预计算不推进 LastRerollPrice
     }
     else
     {
         RerollPrice = LastRerollPrice;
-        RunSubsystem->RemoveCurrency(RerollPrice);
         LastRerollPrice = FBrotatoEconomyMath::GetRerollPrice(CurrentWave, LastRerollPrice, EndlessFactor);
     }
-    ShopItems = GetShopItems(CurrentWave);
+    OnRerollPriceChanged.Broadcast(RerollPrice);                  // UI 直接读 RerollPrice
+}
 
-    // ★ 清空商店奖励
+bool UBrotatoShopSubsystem::Reroll()
+{
+    // ★ 条件（shop.gd:236）：金币足够 且 锁定数 < 4
+    if (RunSubsystem->GetCurrency() < RerollPrice) return false;
+    if (RunSubsystem->GetLockedShopItems().Num() >= BrotatoConst::NbShopItems) return false;
+
+    RunSubsystem->RemoveCurrency(RerollPrice);                    // 免费时 RerollPrice == 0
+    ShopItems = GetShopItems(CurrentWave);
+    SetRerollButtonPrice();                                       // ★ 刷新后预计算「下一次」价格
+    return true;
+}
+
+// ★ 「清空商店奖励」在**购买后**判定（shop.gd:311-316），不是在 Reroll() 里（那里 ShopItems 刚刷新、永不为空）
+void UBrotatoShopSubsystem::OnItemBought()
+{
+    bool bHasNewRerolls = false;
+    if (Snapshot.FreeRerolls > InitialFreeRerolls)                // 购物中新增的免费重掷（shop.gd:305-309）
+    {
+        FreeRerolls += Snapshot.FreeRerolls - InitialFreeRerolls;
+        InitialFreeRerolls = Snapshot.FreeRerolls;
+        bHasNewRerolls = true;
+    }
     if (ShopItems.Num() == 0)
-    { ++FreeRerolls; if (RerollPrice == 0) ++FreeRerolls; }    // 免费重掷时再 +1（共 +2）
+    {
+        if (RerollPrice == 0) ++FreeRerolls;                      // 当前已是免费价时额外 +1（共 +2）
+        ++FreeRerolls;
+        bHasNewRerolls = true;
+    }
+    if (bHasNewRerolls) SetRerollButtonPrice();
 }
 ```
 
-初始化：`LastRerollPrice = GetRerollPrice(Wave, Wave)` → 即 `W + max(1, floor(0.5W))`。
+初始化：`LastRerollPrice = GetRerollPrice(Wave, Wave)` → 即 `W + max(1, floor(0.5W))`，**随后立刻调用一次 `SetRerollButtonPrice()`**（`shop.gd:117-119`），所以进店即展示首价。
 W=10（EF=0）：首价 **15**，之后 20/25/30/35…
+读档恢复商店（`shop.gd:97-102`）：直接还原 `RerollPrice / LastRerollPrice / FreeRerolls`，**不**再调用 `SetRerollButtonPrice()`，否则会二次消耗免费次数。
 
 免费重掷来源：`item_dangerous_bunny`（Tier II, value 35）`free_rerolls +1`；进店初始化 `FreeRerolls = Snapshot.FreeRerolls`；购物中新增的差额立刻累加；清空商店 +1/+2。
 
@@ -349,7 +397,7 @@ ABrotatoHUD
    └─ OverlayLayer                                          ChallengeCompletedUI / InfoPopup
 ```
 
-原作 `Menus.switch(from, to)` / `back()` / `reset()` → CommonUI 的 `PushWidget` / `PopWidget` / `ClearWidgets`。
+原作 `Menus.switch(from, to)` / `back()` / `reset()` → CommonUI 的 `UCommonActivatableWidgetStack::AddWidget` / `AddWidgetInstance`（入栈）、`RemoveWidget`（出栈，栈顶 `DeactivateWidget` 亦可）、`ClearWidgets`（清栈）。`PushWidget` / `PopWidget` 是 Lyra 的 `UPrimaryGameLayout` 封装名，不是 CommonUI 原生 API。
 **★ 页面切换是瞬时 hide/show，无 Tween** —— 不要给 Activatable 加进出动画。
 
 ### 3.2 HUD 元素与刷新源
@@ -452,8 +500,15 @@ void UBrotatoFlowSubsystem::ProcessPendingUpgrades()
     if (PendingUpgrades.Num() == 0) { ProcessPendingItemBoxes(); return; }
     const int32 Level = PendingUpgrades[0]; PendingUpgrades.RemoveAt(0);
     UpgradesUI->Show(ItemService->GetUpgrades(Level, 4, LastUpgradeIds));
-    UpgradesUI->OnUpgradeSelected.AddWeakLambda(this, [this](auto*)
-    { ProcessPendingUpgrades(); });   // 递归串行
+    // ★ 不要在此处每次 AddWeakLambda：回调会随升级次数累积，同一次选择被触发多次；
+    //   且 AddWeakLambda 只适用于原生委托，动态委托（BlueprintAssignable）没有该 API。
+    //   正确做法：在 Flow 子系统初始化时对 UpgradesUI 绑定一次 `OnUpgradeSelected → HandleUpgradeSelected`，
+    //   HandleUpgradeSelected 内再调用 ProcessPendingUpgrades() 实现串行；或在 UpgradesUI::OnActivated 里统一处理。
+}
+
+void UBrotatoFlowSubsystem::HandleUpgradeSelected(const UBrotatoUpgradeData*)
+{
+    ProcessPendingUpgrades();         // 队列空时自动转 ProcessPendingItemBoxes()
 }
 ```
 
@@ -557,22 +612,37 @@ public:
 ### 4.2 三级备份
 
 ```cpp
-// 路径：<SavedDir>/SaveGames/<SteamId 或 "user">/
+// ★ 路径：`USaveGame` 的槽名**不能带路径**（旧版注释 `<SteamId>/` 与槽名 "save" 不一致）。
+//   多用户隔离用槽名前缀：`FString::Printf(TEXT("%s_save"), *UserId)`；物理目录固定为 <Saved>/SaveGames/。
 static const TCHAR* SlotMain   = TEXT("save");
 static const TCHAR* SlotLatest = TEXT("save_latest");
 static const TCHAR* SlotStable = TEXT("save_stable");
 static constexpr int32 MaxSavesWithoutBackup = 5;
 
+// ★ 成员变量改名 SaveObj，避免与成员函数 Save() 同名（编译错误）
 void UBrotatoSaveSubsystem::Save()
 {
-    UGameplayStatics::SaveGameToSlot(Save, SlotMain, 0);
-    if (++SavesSinceBackup >= MaxSavesWithoutBackup)
+    // ★ 同步 SaveGameToSlot 在波末/商店频繁调用会卡顿 → 用 AsyncSaveGameToSlot + 「保存中」标志的合并队列
+    //   （保存期间再次请求只置脏位，完成回调里若仍脏再存一次）；退出游戏时才同步 flush。
+    UGameplayStatics::AsyncSaveGameToSlot(SaveObj, SlotMain, 0,
+        FAsyncSaveGameToSlotDelegate::CreateUObject(this, &UBrotatoSaveSubsystem::OnSaveDone));
+}
+
+void UBrotatoSaveSubsystem::OnSaveDone(const FString&, const int32, bool bOk)
+{
+    if (bOk && ++SavesSinceBackup >= MaxSavesWithoutBackup)
     { CopySlot(SlotMain, SlotLatest); SavesSinceBackup = 0; }
+    // ★ 稳定档：原作 `save_backups(path)` 在「Load 成功后」用主档修复备份（progress_data.gd:422、475-489）。
+    //   旧版 SlotStable 从未写入。规则：每次 Load 成功后，若 Stable 不存在或版本更旧 → 用主档覆盖 Stable。
 }
 
 EBrotatoLoadResult UBrotatoSaveSubsystem::Load()
 {
-    if (TryLoad(SlotMain))   return EBrotatoLoadResult::Ok;
+    // ★ 区分「不存在」与「损坏」：原作文件不存在 → 直接新建（progress_data.gd:347-350），不报 Corrupted。
+    //   首次启动（三个槽都不存在）必须返回 FirstRun 并新建默认档，旧版会误报 CorruptedSave。
+    if (!DoesAnySlotExist()) return CreateDefaultSave(), EBrotatoLoadResult::FirstRun;
+
+    if (TryLoad(SlotMain))   { RepairStableFromMain(); return EBrotatoLoadResult::Ok; }
     if (TryLoad(SlotLatest)) return EBrotatoLoadResult::CorruptedSave;        // 提示并用 latest
     if (TryLoad(SlotStable)) return EBrotatoLoadResult::CorruptedSaveLatest;
     return RecreateFromAchievements();   // 无 Steam → CorruptedAllSavesNoSteam，且不写档
@@ -582,7 +652,7 @@ EBrotatoLoadResult UBrotatoSaveSubsystem::Load()
 | 规则 | 说明 |
 |---|---|
 | 解锁列表 | `AppendWithoutDuplicates()`，**只增不减** |
-| `Settings` / `Data` | 用 `MergeWithDefaults()` 合并 → 新增设置项自动带默认值 |
+| `Settings` / `Data` | 二进制 `USaveGame` 的 tagged property 本身容忍字段增减，新增字段自动取 C++ 默认值，**不需要** `MergeWithDefaults()`（那是原作 JSON 的做法）；`Data`(TMap) 缺 key 时用 `FindRef` 取默认 0。★ 另加魔数 + 版本 + CRC，用于完整性检测（二进制档损坏不一定能被引擎发现） |
 | 损坏恢复 | 级联降级；全坏且有 Steam → 遍历 challenges 用成就重建，`Data.*` 从 Steam Stat 拉回 |
 | **绝不写回损坏档** | 恢复失败时只读不写 |
 
@@ -596,7 +666,7 @@ EBrotatoLoadResult UBrotatoSaveSubsystem::Load()
 bHasRunState, EnemyScaling{health,damage,speed}, NbOfWaves, CurrentZone,
 CurrentLevel, CurrentXp, MaxWeapons, CurrentWave, CurrentDifficulty,
 Gold, BonusGold, ElitesSpawn[], bShopEffectsChecked,
-Weapons[{MyId, InstanceId, TrackedValue, DmgDealtLastWave, NbShotsTaken}],
+Weapons[{MyId, InstanceId, TrackedValue, DmgDealtLastWave}],   // ★ 不含 NbShotsTaken：原作它是 weapon.gd:27 的节点私有变量，每波重新实例化即清零，不进存档
 Items[{MyId, InstanceId}], Effects（分三类序列化，见下）,
 ChallengesCompletedThisRun[], CharacterId, StartingWeaponId,
 ActiveSetEffects[], UniqueEffects[], AdditionalWeaponEffects[],
@@ -606,8 +676,12 @@ DifficultyUnlocked, bMaxEndlessWaveRecordBeaten, bIsEndlessRun,
 ChalHoarderValue/Completed, ChalRecyclingValue/Completed/Current,
 ChalHungryValue/Completed, ConsumablesPickedUpThisRun,
 ShopItems[{MyId, Wave}], RerollPrice, LastRerollPrice, InitialFreeRerolls, FreeRerolls,
-TrackedItemEffects{}, ★ RunSeed（新增，原作无，用于确定性复现）
+TrackedItemEffects{}, ★ RunSeed（新增，原作无）+ ★ RngStreamStates{Shop, Loot, Spawn, Combat}（各流 `FRandomStream` 当前状态）
 ```
+
+> ⚠️ 只存 `RunSeed` 不够：读档后 Shop/Loot/Spawn 流会从头开始，**重复出现第一波的商店/掉落序列**。续关必须存各流的当前状态
+> （`FRandomStream` 每次取数都会 `MutateSeed()` 推进内部种子，`GetCurrentSeed()` 返回的就是当前游标，`GetInitialSeed()` 才是初始值；
+> 存 `GetCurrentSeed()`，读档时 `Initialize(Saved)` 即可从原游标继续。注意读档恢复的是 `Seed` 字段，与 `Initialize` 重置 `InitialSeed` 的副作用无关紧要，但勿用 `Reset()`。）
 
 序列化规则：
 
@@ -877,7 +951,7 @@ void UBrotatoFlowSubsystem::OnPlayerDied()
 | # | 项 | 标准 |
 |---|---|---|
 | U01 | 完整流程 | 标题→角色→武器→难度→W1→商店→W2 无卡死，焦点始终有落点 |
-| U02 | 暂停 | ESC 暂停，敌人/计时器全停，SFX 队列仍工作 |
+| U02 | 暂停 | ESC 暂停，敌人/计时器全停；UI 音效仍可播（`bIsUISound` / 并发组规则，非手写 SFX 队列） |
 | U03 | 失焦暂停 | `bPauseOnFocusLost=true` 时自动暂停 |
 | U04 | 手柄 | 全流程可操作；D-Pad 长按 0.2 s 后连续导航 |
 | U05 | 鼠标焦点 | 悬停商店格 → 该格抢焦点 + 弹出 ItemPopup |

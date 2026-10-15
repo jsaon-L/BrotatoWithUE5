@@ -437,7 +437,7 @@ void UBrotatoDamageExecCalc::Execute_Implementation(
 |---|---|
 | `DurationPolicy` | **Instant** |
 | Executions | `UBrotatoDamageExecCalc` |
-| `GameplayCues` | `Brotato.Cue.Hit.Normal`（Crit/Dodge 由 Cue 侧读 Context 分流，或用 `DynamicGrantedTags` 换 Cue） |
+| `GameplayCues` | `GameplayCue.Brotato.Hit.Normal`（Crit/Dodge 由 Cue 侧读 Context 分流，或用 `DynamicGrantedTags` 换 Cue） |
 | SetByCaller 键 | `Data.Damage` / `Data.CritChance` / `Data.CritDamage` / `Data.KnockbackAmount` |
 
 ### 4.2 自定义 `FGameplayEffectContext`
@@ -511,7 +511,7 @@ namespace FBrotatoDamagePipeline
 
 ---
 
-## 5. HookRegistry（39 个钩子槽）
+## 5. HookRegistry（40 个钩子键）
 
 ### 5.1 数据结构
 
@@ -587,7 +587,7 @@ ASC->HandleGameplayEvent(Data.EventTag, &Data);
 
 > **学习路径建议**：先全部用风格 1 跑通（保数值正确），再把 3–5 个典型钩子重构成风格 2。不要一上来全用 Ability。
 
-### 5.3 钩子槽全表（39 个）
+### 5.3 钩子槽全表（★ 全工程唯一口径：40 个键）
 
 | # | Tag | 触发时机 | 载荷（Value / ExtraA / ExtraName） | 来源样例 |
 |---|---|---|---|---|
@@ -632,7 +632,12 @@ ASC->HandleGameplayEvent(Data.EventTag, &Data);
 | 39 | `Hook.GuaranteedShopItems` | 商店生成 | — / — / item_id | Fisherman |
 | 40 | `Hook.SpecificItemsPrice` | 定价 | pct / — / item_id | Fisherman |
 
-> 原文档 §05 §2.5 表格为 34 行（含斜杠合并键），**展开后为 40 个键**（上表）。以本表为准，`Docs/05` 的"36 个"口径需修正。
+> ★ **40 的构成（源码核对）**：`RunData.effects` 里 `init_effects`（`run_data.gd:1116-1163`）有 **38 个数组型键** + `burn_chance`（`BurningData` 对象）= **39**；
+> 再加 **`weapon_stack`**（`WeaponStackEffect`，是**武器级**效果，存在武器自己的 effects 里，不在 `RunData.effects` 字典中；UE 侧统一进 HookRegistry）= **40**。
+> 因此「RunData.effects 的钩子槽」是 39，「UE HookRegistry 的键」是 40，两个数不矛盾，写文档时要说清是哪一个。
+>
+> 原文档 §05 §2.5 表格为 34 行（含斜杠合并键），**展开后为 40 个键**（上表）。以本表为准；
+> `Docs/02`/`05`/`09`/`10`、`D02`、`D08` 中凡出现 "36 / 38 / 39 个钩子槽" 的口径均已统一为 **40**。
 
 ### 5.4 爆炸统一结算（★ 概率相加、伤害相加、只播一次）
 

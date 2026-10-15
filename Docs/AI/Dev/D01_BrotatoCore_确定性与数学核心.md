@@ -305,7 +305,7 @@ namespace BrotatoMathInt
 | 武器 pct 乘区 | `max(1, round(dmg × (pct + exp)))` | Renegade `DMG% = -400` → 乘区 = −3 |
 | 暴击重算 | `round(value × crit_damage)` | 同上（原始伤害已可为负） |
 | 玩家护甲 | `round(dmg × armor_coef)` | 负护甲 → 系数 > 1，dmg 可能为负 |
-| `percent_materials` | `(pct/100) × gold` | Streamer 的负向条目 |
+| `percent_materials` | `(pct/100) × gold` | 原版仅 Streamer `+3%`（正向，`val ≥ 0`）；`val < 0` 分支（`player.gd:590-592`）为防御性路径，无原版数据 |
 | 敌人 HP/DMG/SPD/ARM 成长 | `round(base × (Acc + S))` | `enemy_health` 等可被角色调负 |
 | 敌人伤害二段 | `round(new_damage × (1 + EF))` | — |
 | 波末收获 | `round(N_enemies × pacifist/100)` | — |
@@ -673,10 +673,10 @@ float GetNextCooldownSeconds(const FWeaponRuntimeStats& O, int32 WeaponCount,
 // 攻击序列结束时 Apply Cooldown GE（等价于原作"射击期间冷却不流逝"）
 Spec->SetSetByCallerMagnitude(BrotatoTags::Data_Cooldown, NextCooldownSeconds);
 
-// 攻速变化时压缩当前冷却（对齐原作 reset_cooldown）：
-//   取 min(剩余时长, 新冷却) → ASC->ModifyActiveGameplayEffectStartTime() 或 Remove+Apply
-const float Remaining = ASC->GetActiveGameplayEffectRemainingDuration(CooldownHandle);
-const float Target    = FMath::Min(Remaining, NewCooldownSeconds);
+// 「移动 ↔ 静止」状态切换时压缩当前冷却（对齐原作 reset_cooldown，仅此时机；属性重算不动冷却）：
+//   取 min(剩余时长, 新冷却 × 大装填倍率) → Remove+Apply（推荐），或 ModifyActiveEffectStartTime(Handle, -(Remaining-Target))
+//   剩余时长的查询 API 以 5.8 头文件为准（D04 §3.3）
+const float Target = FMath::Min(RemainingSeconds, NewCooldownSeconds);
 ```
 
 | 规则 | 值 |

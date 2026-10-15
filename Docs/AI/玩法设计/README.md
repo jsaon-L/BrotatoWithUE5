@@ -134,10 +134,9 @@
 | `resources/translations/translations.csv` 二进制缺失 | 全部 UI 文案 | 从正版游戏导出，或按 §08 的键命名规范重建 |
 | 部分 Tier I–III 物品的 `value` 字段未逐个读取（约 100 项） | 商店价格 | 复刻期批量扫描 `items/all/*/*_data.tres` 的 `value` |
 | 美术资源（861 PNG / 62 WAV / 16 MP3） | 表现层 | 需自制或授权；本文档只规范**尺寸、时长、触发时机**（分项见 §07 §2.1） |
-| 部分火焰系武器的 `burning_data` 具体 chance/damage/duration | 燃烧数值 | 扫描 `weapons/*/torch|flamethrower|wand|flaming_knuckles/*/**_burning_data.tres` |
-| **角色默认起始武器池的 9 把清单** | **M1/M5 硬阻塞** | 扫描 `WeaponSelection` 的默认可选列表（见 §03 §6） |
 | `item_tyler` / `item_wandering_bot` 的结构物参数 | 2 件 Tier III 物品无法实现 | 扫描对应 `*_effect.tres` + 场景（见 §05 §6.1） |
 
+> 已关闭（不再列入缺口）：全部 17 个 `*_burning_data.tres` 的 chance/damage/duration（见 §05 §7.1）；起始武器池为每角色一份（见 §03 §6）。
 > **全部 `[待确认]` 项的汇总与责任里程碑见 [10_开发排期与验收清单](10_开发排期与验收清单.md) §7。**
 
 ---
@@ -161,7 +160,7 @@
 | 时间模型 | **UE 标准可变 `DeltaTime`** + `UBrotatoSimSubsystem` 固定**阶段顺序**（非固定步长） | 原作冷却以物理帧计数只是 Godot 的实现方式；本项目把全部时间量换算为**秒**（`秒 = 帧/60`），一切随时间变化的量乘 `DeltaTime`，指数衰减用半衰期式 → 30/60/144/240 fps 手感一致（详见 §00 §2） |
 | 属性系统 | **分级 GAS**：玩家 + Boss/精英用 `UAttributeSet` + GE；普通敌人用 `FEnemyState` 纯数据 | GAS 的 `(Base+Add)×Mul` 与原作 `(三层相加)×(1+gain/100)` **数学等价**（gain 做成 Multiplicative AttributeBased Modifier）；但 144 个 ASC 不可接受 → 分级 |
 | 效果系统 | `TInstancedStruct<FBrotatoEffectBase>` 数据定义 → 运行时桥接成 **GE（属性类）+ HookRegistry（钩子类）** | 21 种 Effect 中约 9 种可直接映射 GE Modifier；其余 12 种钩子语义 GAS 无对应，保留自建注册表（事件分发走 GAS 原生 `GameplayEvent`）。**卸载必须用 `FActiveGameplayEffectHandle`**（原作值比较有 bug，不复刻） |
-| GE 使用边界 | **Instant / Infinite / Duration / Periodic 四类全部启用** | 无敌窗口、吸血 CD、减速用 Duration GE；燃烧 tick、生命回复、每 5 s 叠加用 Periodic GE。时长/周期需要运行时决定时用 `SetByCaller` / `Spec->Period`。GE 计时走 World 时间，天然正确响应 Pause 与 TimeDilation |
+| GE 使用边界 | **Instant / Infinite / Duration / Periodic 四类全部启用** | 无敌窗口、吸血 CD、减速用 Duration GE；燃烧 tick、生命回复用 Periodic GE（每 5 s 叠加属性**不用** Periodic：它会永久写 BaseValue，改为 `WaitDelay` 循环 Apply 可叠层 Infinite GE，见 §00 §3.3）。时长/周期需要运行时决定时用 `SetByCaller` / `Spec.Data->Period`。GE 计时走 World 时间，天然正确响应 Pause 与 TimeDilation |
 | 武器攻击 | `UGameplayAbility` + `UAbilityTask`（挥击 Tween 走 `UCurveFloat`）；**冷却用 GAS Cooldown GE** | 重写 `ApplyCooldown` 以 `SetByCaller` 写入含随机抖动的秒数；「射击期间冷却不流逝」等价于**攻击序列结束时才 Apply Cooldown GE**；UI 直接读 `GetCooldownTimeRemaining()` |
 | 敌人特效 | **Cue Proxy ASC**（World 级共享 ASC 播放无主 GameplayCue） | 让 144 个无 ASC 敌人也能走统一的 Cue 资产管线 |
 | 敌人 AI | 小兵：`MovementBehavior + AttackBehavior` 数据驱动批处理；**Boss / 精英 / 结构物：`StateTree`** | 被否决的是行为树（144 个 BT 实例是性能灾难），而 Boss 阶段状态机的标准答案是 UE5 原生的 StateTree |
@@ -220,7 +219,7 @@ BrotatoCore ← BrotatoData ← BrotatoGAS ← BrotatoGameplay ← BrotatoUI
 
 | # | 风险点 | 正确做法 | 详见 |
 |---|---|---|---|
-| G1 | 用自建计时器替代 GE 计时 | ✅ **反向**：燃烧 tick、生命回复、无敌窗口、吸血 CD、每 5 s 叠加**必须用 Periodic / Duration GE**（时长与周期用 `SetByCaller` / `Spec->Period`）。禁止关闭 ASC Tick 手动驱动 | §00 §3.1 §3.3 |
+| G1 | 用自建计时器替代 GE 计时 | ✅ **反向**：燃烧 tick、生命回复用 Periodic GE；无敌窗口、吸血 CD 用 Duration GE；每 5 s 叠加用 `WaitDelay` 循环 Apply Infinite 叠层 GE（时长与周期用 `SetByCaller` / `Spec.Data->Period`）。禁止关闭 ASC Tick 手动驱动 | §00 §3.1 §3.3 |
 | G2 | `gain_*` 乘区映射 | 做成 Attribute，主属性挂 **Multiplicative + AttributeBased 非快照** Modifier，`Coefficient=0.01`、`PreMultiplyAdditive=100` → 恰好 `1+gain/100` | §09 §4.4 |
 | G3 | "每 N 点 X 给 Y" 循环依赖 | **禁用非快照 MMC**（会递归死循环）。用「先移除旧 Linked GE → 单次快照计算 → 重新 Apply」模式，读源属性时天然排除 Linked 层 | §09 §4.5 |
 | G4 | 整数除法 | LinkedStats 的 `Scaled / Nb` 必须 `FloorToInt`，不能用浮点 | §09 §4.5 |

@@ -70,13 +70,13 @@ public:
 
     void MarkStatsDirty() { bStatsDirty = true; }
     void RecomputeStats(const FBrotatoStatSnapshot& S, const FBrotatoHookView& H);
-    void CompressCooldown();                         // 攻速变化 / 移动状态切换时
+    void ResetCooldown();                            // ★ 仅在「移动 ↔ 静止」状态切换时调用（原 reset_cooldown，D03 同名）
 
     void EnableHitbox()  { IgnoredThisSwing.Reset(); bHitboxActive = true; }   // ★ 立即生效
     void DisableHitbox() { bHitboxActive = false; IgnoredThisSwing.Reset(); }
 
     bool IsOnCooldown() const;                       // 查 Cooldown.Weapon.{SlotIndex} Tag
-    float GetCooldownRemaining() const;              // ASC->GetActiveGameplayEffectRemainingDuration
+    float GetCooldownRemaining() const;              // Ability->GetCooldownTimeRemaining()（签名以 5.8 头文件为准）
 
     bool IsMelee() const { return Data->Type == EWeaponType::Melee; }
 private:
@@ -145,8 +145,8 @@ void ABrotatoWeapon::RecomputeStats(const FBrotatoStatSnapshot& S, const FBrotat
         Data->Stats, S, H, SameCount, RunSubsystem->GetLevel(),
         IsMelee(), /*bIsStructure*/ false);
 
-    // ★ 攻速变化可能压缩当前冷却
-    CompressCooldown();
+    // ★ 不在此处压缩冷却。原作 init_stats(false) 不动冷却（main.gd:306），
+    //   reset_cooldown 只在「移动 / 静止」状态切换时调用（player.gd:136/147/162/173），见 §3.2
     HitboxExtents = Data->Stats.HitboxExtents;
 }
 ```
@@ -172,8 +172,9 @@ void ABrotatoWeapon::RecomputeStats(const FBrotatoStatSnapshot& S, const FBrotat
 | 攻速下限（原作 2 帧）/ 抖动下限（1 帧） | 秒制常量 `MinWeaponCooldown = 1/30`、`MinJitteredCooldown = 1/60`；时间量不取整 |
 | 每次射击 `±min(n×CD/5, n×0.0833s)` 随机抖动 | 重写 `ApplyCooldown()` + `SetByCaller` —— SetByCaller 的标准用途 |
 | **射击过程中冷却不递减** | **攻击序列结束时才 Apply Cooldown GE**（与原作"开火即设定 + 射击期间冻结"数学等价） |
-| 攻速变化立即压缩当前冷却 | `ModifyActiveGameplayEffectStartTime()` 或 Remove + Apply 剩余时长 |
+| 移动 ↔ 静止切换时压缩当前冷却（原 `reset_cooldown`，**仅此时机**） | Remove + 以压缩后剩余时长重新 Apply；或 `FActiveGameplayEffectsContainer::ModifyActiveEffectStartTime`（★ 它是给 StartTime **加** Diff，缩短剩余需传**负值**；非 ASC 公开 API，以 5.8 头文件为准）。压缩时同样要乘大装填倍率（`weapon.gd:207-209`） |
 | 大装填（每 X 发 × 倍率） | 在 `GetNextCooldownSeconds()` 内判断后写入 Spec |
+| ★ 开波初始冷却 | 原作 `init_stats(at_wave_begin=true)` 会设 `_current_cooldown = get_next_cooldown()`（`weapon.gd:88-89`），武器每波重新实例化、`_nb_shots_taken` 清零。UE 侧：**开波时对每把武器 Apply 一次初始 Cooldown GE，并清零 `NbShotsTaken`**；否则武器开波即射，且 Cooldown GE / 发数计数会跨波残留（D06 存档里也不应存 `NbShotsTaken`，原作 `WeaponData` 无此字段） |
 
 ### 3.1 GE 资产 `GE_WeaponCooldown`
 
@@ -186,8 +187,13 @@ void ABrotatoWeapon::RecomputeStats(const FBrotatoStatSnapshot& S, const FBrotat
 
 ```cpp
 // UGA_WeaponAttack 构造：CooldownGameplayEffectClass = UGE_WeaponCooldown::StaticClass();
-// 该 Ability 的 CooldownTags 需含 Brotato.Cooldown.Weapon.{Slot}，
-// 使基类 CheckCooldown() 自动生效（无需手写计数器判断）。
+// ★ 基类 CheckCooldown() 读的是 GetCooldownTags()（默认取 CooldownGE CDO 的 GrantedTags），
+//   Spec 上的 DynamicGrantedTags 它看不到。6 把武器共用同一个 GE 类，所以必须 override：
+//     virtual const FGameplayTagContainer* GetCooldownTags() const override { return &SlotCooldownTags; }
+//   其中 SlotCooldownTags = { Brotato.Cooldown.Weapon.{Slot} }，在授予 Ability 时按槽位写入（每槽一个 Ability 实例，
+//   InstancingPolicy = InstancedPerActor）。这样武器 1 的冷却不会堵住武器 2。
+// ★ 调用路径：激活序列结束时调用 CommitAbilityCooldown(Handle, ActorInfo, ActivationInfo, /*ForceCooldown=*/true)，
+//   而不是直接调用 ApplyCooldown（后者会绕过 Commit 的检查）。
 
 void UGA_WeaponAttack::ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
                                      const FGameplayAbilityActorInfo* ActorInfo,
@@ -206,26 +212,38 @@ void UGA_WeaponAttack::ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
 }
 ```
 
-### 3.2 冷却压缩（对齐原作 `reset_cooldown`）
+### 3.2 冷却压缩（对齐原作 `reset_cooldown`，★ 仅在移动 ↔ 静止切换时调用）
 
 ```cpp
-void ABrotatoWeapon::CompressCooldown()
+void ABrotatoWeapon::ResetCooldown()
 {
-    if (!CooldownHandle.IsValid()) return;
-    const float Remaining = ASC->GetActiveGameplayEffectRemainingDuration(CooldownHandle);
-    const float Target    = FMath::Min(Remaining, RuntimeStats.CooldownSeconds);
+    // 原作 weapon.gd:207-209：reset 同样会乘大装填倍率
+    // 推荐实现：Remove + 重新 Apply（不依赖非公开 API）
+    float Remaining = 0.f, Duration = 0.f;
+    if (!GetCooldownTiming(Remaining, Duration)) return;       // 内部用 ASC 查询 CooldownHandle 的剩余时长
+    const float Target = FMath::Min(Remaining, RuntimeStats.CooldownSeconds * BigReloadMultiplierIfDue());
     if (Target < Remaining)
-        ASC->ModifyActiveGameplayEffectStartTime(CooldownHandle, Remaining - Target);
+    {
+        ASC->RemoveActiveGameplayEffect(CooldownHandle);
+        ReapplyCooldownWithDuration(Target);                   // SetByCaller = Target
+    }
+    // 若改用 FActiveGameplayEffectsContainer::ModifyActiveEffectStartTime(Handle, Diff)：
+    //   它把 StartTime += Diff，故缩短剩余时要传 -(Remaining - Target)（旧版传正值会反向延长冷却，已更正）
 }
 ```
 
 ### 3.3 UI 与查询
 
 ```cpp
-bool  ABrotatoWeapon::IsOnCooldown()        const { return ASC->HasMatchingGameplayTag(GetCooldownTag()); }
+bool  ABrotatoWeapon::IsOnCooldown() const { return ASC->HasMatchingGameplayTag(GetCooldownTag()); }
 float ABrotatoWeapon::GetCooldownRemaining() const
-{ return ASC->GetActiveGameplayEffectRemainingDuration(CooldownHandle); }
+{
+    // 同槽 Ability 实例的 GetCooldownTimeRemaining()；或用 FGameplayEffectQuery 查 ASC（签名以 5.8 头文件为准）
+    return AbilityInstance ? AbilityInstance->GetCooldownTimeRemaining() : 0.f;
+}
 ```
+
+> 修正：旧版写成 `ASC->GetActiveGameplayEffectRemainingDuration(Handle)`。该名字不是 ASC 成员（它是 `UAbilitySystemBlueprintLibrary` 的静态函数），直接照抄会编译失败。
 
 UI 显示的"总攻击间隔"（§04 §2.2）：
 - 近战：`SwingTiming.TotalDuration() + RuntimeStats.CooldownSeconds`
@@ -375,7 +393,9 @@ void UGA_WeaponAttack::ActivateAbility(...)
     else
     {
         // ★ 远程：音效在最开头播（早于子弹生成）
-        K2_ExecuteGameplayCue(T.Cue_Weapon_RangedFire);
+        // ★ K2_ExecuteGameplayCue 的第二个参数 FGameplayEffectContextHandle 无默认值，单参调用编译不过；
+        //   在 C++ 里直接用 ASC 的 ExecuteGameplayCue(Tag, Params)
+        GetAbilitySystemComponentFromActorInfo()->ExecuteGameplayCue(T.Cue_Weapon_RangedFire, FGameplayCueParameters());
         FWeaponFireCore::SpawnProjectiles(W, ProjectileSubsystem, Rng);
 
         // 后坐动画 + 冷却冻结期：recoil_duration × 2（秒）
@@ -482,9 +502,12 @@ void UAbilityTask_MeleeSwing::Activate()
     const FWeaponRuntimeStats& O = Weapon->RuntimeStats;
 
     // 攻击类型：alternate_attack_type 时 THRUST/SWEEP 交替（Sword / Fighting Stick / Excalibur）
-    bSweep = Weapon->Data->Stats.bAlternateAttackType
-           ? (Weapon->NbShotsTaken % 2 == 1)
-           : (Weapon->Data->Stats.AttackType == EMeleeAttackType::Sweep);
+    // ★ 对齐 melee_weapon.gd:4-15：`next_attack_type` 初值 = stats.attack_type，并在 shoot() **之后**翻转。
+    //   旧版用 `NbShotsTaken % 2 == 1` 判断：NbShotsTaken++ 发生在 Activate 之后，导致首击永远是 THRUST，
+    //   初始为 SWEEP 的武器会错。ShouldFire 的 IsSweepMode() 必须读同一个 NextAttackType，否则射程判定与挥击不一致。
+    bSweep = (Weapon->NextAttackType == EMeleeAttackType::Sweep);
+    // 翻转放在本次攻击「提交」后（对应原作 .shoot() 之后）：
+    //   if (Stats.bAlternateAttackType) Weapon->NextAttackType = bSweep ? Thrust : Sweep;
 
     float EffectiveRange = O.MaxRange;
     if (bSweep)
@@ -512,11 +535,19 @@ void UAbilityTask_MeleeSwing::TickTask(float DeltaTime)
     PhaseElapsed += DeltaTime;
     if (PhaseElapsed < PhaseDuration) { UpdateSpriteTransform(); return; }
 
-    // ★ 余量结转：低帧率时一次 Tick 可能跨过整个阶段，
-    //   把超出部分带进下一阶段，保证总时长准确（关键！）
-    const float Carry = PhaseElapsed - PhaseDuration;
-    AdvancePhase();
-    PhaseElapsed = FMath::Min(Carry, PhaseDuration);
+    // ★ 余量结转：低帧率时一次 Tick 可能跨过多个阶段（如 recoil 仅 0.01 s），
+    //   必须用 while 逐阶段消耗，**不能** Min(Carry, PhaseDuration) 截断，否则丢时间，与 B04「总时长准确」矛盾
+    while (Phase != EPhase::Done && PhaseElapsed >= PhaseDuration)
+    {
+        PhaseElapsed -= PhaseDuration;
+        AdvancePhase();                    // 内部 EnterPhase 会更新 PhaseDuration；最后一阶段结束置 Phase = Done
+    }
+    if (Phase == EPhase::Done)
+    {
+        // ★ 先 EndTask 再不碰任何成员：OnFinished 广播可能同步触发 Ability::EndAbility，
+        //   因此应「先收尾 Sprite，再 Broadcast，最后 EndTask」，且 EndTask 后不再调用 UpdateSpriteTransform
+        return;
+    }
     UpdateSpriteTransform();
 }
 
@@ -566,7 +597,9 @@ void UAbilityTask_MeleeSwing::UpdateSpriteTransform()
     const float T = PhaseDuration > 0.f
                   ? FMath::Clamp(PhaseElapsed / PhaseDuration, 0.f, 1.f) : 1.f;
     const float Recoil = Weapon->RuntimeStats.Recoil;
-    const float Sign   = Weapon->bFlipV ? -1.f : 1.f;
+    // ★ 符号勘误：原作 melee_weapon_shooting_behavior.gd:45-54 —— flip_v=false 时 side_a=-side_range、angle_a=-sweep；
+    //   flip_v=true 时取正。旧版 `bFlipV ? -1 : 1` 恰好相反。若 UE 侧 Y 轴方向与 Godot 相反，在此统一翻转并写入注释。
+    const float Sign   = Weapon->bFlipV ? +1.f : -1.f;
 
     switch (Phase)
     {
@@ -605,9 +638,12 @@ void UAbilityTask_MeleeSwing::UpdateSpriteTransform()
     }
     case EPhase::Return:
     {   // 收回：EXPO / OUT
+        // ★ 必须从「阶段起点」插值：`Lerp(当前位置, 初始位置, A)` 每帧以上一帧结果为起点，结果依赖帧率，
+        //   违反 00 §2.3 硬规则 1。原作 tween 起点是阶段开始时的 sprite.position（behavior.gd:80-81）。
+        //   在 EnterPhase(Return) 时缓存 PhaseStartPos / PhaseStartRot，此处用它们做插值。
         const float A = FBrotatoWeaponMath::EaseExpoOut(T);
-        Weapon->SetSpriteLocalPos(FMath::Lerp(Weapon->GetSpriteLocalPos(), InitialLocalPos, A));
-        Weapon->SetSpriteRotation(FMath::Lerp(Weapon->GetSpriteRotation(), 0.f, A));
+        Weapon->SetSpriteLocalPos(FMath::Lerp(PhaseStartPos, InitialLocalPos, A));
+        Weapon->SetSpriteRotation(FMath::Lerp(PhaseStartRot, 0.f, A));
         break;
     }
     default: break;
@@ -849,15 +885,18 @@ public:
 
 ### 9.2 Cue 分工
 
-| Cue | 播放者 | 表现 |
+> ★ 完整 Tag = `GameplayCue.Brotato.` + 下表键（如 `GameplayCue.Brotato.Hit.Crit`），与 D02 §1.2 一致。
+> `GameplayCue.` 根是 CueManager 路由的硬性要求。
+
+| Cue（省略 `GameplayCue.Brotato.`） | 播放者 | 表现 |
 |---|---|---|
-| `Cue.Player.Damaged` | 玩家 ASC | 屏震 5 px + 红色飘字 + 暗角更新 |
-| `Cue.Player.Healed` / `LevelUp` / `Died` | 玩家 ASC | 音效 + 飘字 |
-| `Cue.Hit.Normal` / `Crit` / `Dodge` / `Nullified` | 玩家 ASC（受击）/ **Proxy**（敌人受击） | 白闪 + 粒子 + 飘字 |
-| `Cue.Enemy.Damaged` / `Died` | **Proxy ASC** | 同上 |
-| `Cue.Weapon.MeleeSwing` / `RangedFire` | 玩家 ASC（Ability 内）/ Proxy（结构物） | 音效 |
-| `Cue.Explosion` / `Burning` | **Proxy ASC** | 粒子 + 音效 |
-| `Cue.Screenshake.*` | 玩家 ASC | 相机偏移 |
+| `Player.Damaged` | 玩家 ASC | 屏震 5 px + 红色飘字 + 暗角更新 |
+| `Player.Healed` / `LevelUp` / `Died` | 玩家 ASC | 音效 + 飘字 |
+| `Hit.Normal` / `Crit` / `Dodge` / `Nullified` | 玩家 ASC（受击）/ **Proxy**（敌人受击） | 白闪 + 粒子 + 飘字 |
+| `Enemy.Damaged` / `Died` | **Proxy ASC** | 同上 |
+| `Weapon.MeleeSwing` / `RangedFire` | 玩家 ASC（Ability 内）/ Proxy（结构物） | 音效 |
+| `Explosion` / `Burning` | **Proxy ASC** | 粒子 + 音效 |
+| `Screenshake.*` | 玩家 ASC | 相机偏移 |
 
 ### 9.3 ★ 限流（在调用前，不在 CueNotify 内部）
 
@@ -865,6 +904,8 @@ public:
 void UFxSubsystem::QueueHitCue(FVector2D Pos, int32 Dmg, bool bCrit, bool bDodge, float EffectScale)
 {
     if (!Settings.bVisualEffects) return;
+    // ★ ActiveGraphicalEffects 必须有递减路径：在 Cue 的 OnRemove / Niagara OnSystemFinished 回调里 `--ActiveGraphicalEffects`，
+    //   否则计数只增不减，100 次后限流永久生效（旧版漏写）。更简单的做法：由 UFxSubsystem 直接管理 Niagara 池并用池占用数作上限。
     if (ActiveGraphicalEffects >= BrotatoConst::MaxGraphicalEffects) return;   // ★ 100 上限
     if (!Rng.StrictRoll(EffectScale)) return;   // ★ 原作 randf() < effect_scale（注意括号！）
 
@@ -907,18 +948,28 @@ void UFxSubsystem::QueueHitCue(FVector2D Pos, int32 Dmg, bool bCrit, bool bDodge
 void UFxSubsystem::Shake(float Intensity, float DurationSec)
 {
     if (!Settings.bScreenshake) return;
-    // ★ 覆盖需「强度 > 当前 且 时长 > 当前」；全游戏 duration 恒为 0.1
-    //   → 一段震动期内后续请求永远无法覆盖，生效的是第一个触发者（照抄，§00 P1）
+    // ★ 覆盖需「强度 > 当前 且 时长 > 当前」（screenshaker.gd:29）。
+    //   CurDuration 是**剩余时长**，由 Tick 每帧递减（见下）：
+    //   同帧内剩余仍 = 0.1 → 后到者无法覆盖（先到者胜）；
+    //   跨帧后剩余 < 0.1 → 更强的新请求可覆盖并把剩余重置为 0.1。
+    //   ⚠ 不要用「SetTimer 到点复位 + CurDuration 恒等于 0.1」——那样跨帧永远无法覆盖，与原作不符。
     if (!(Intensity > CurIntensity && DurationSec > CurDuration)) return;
     CurIntensity = Intensity;
     CurDuration  = DurationSec;
 
     if (ActiveShake) CameraManager->StopCameraShake(ActiveShake, /*bImmediately*/ true);
     ActiveShake = CameraManager->StartCameraShake(ShakeClass, Intensity / RefIntensity);
-    // 到点复位（用 Timer 而非帧计数）
-    GetWorld()->GetTimerManager().SetTimer(ShakeResetHandle,
-        [this]{ CurIntensity = 0.f; CurDuration = 0.f; ActiveShake = nullptr; },
-        DurationSec, false);
+}
+
+void UFxSubsystem::Tick(float DeltaTime)   // UTickableWorldSubsystem；每帧（渲染帧，非 Sim 步）
+{
+    if (CurDuration <= 0.f)                // 对应 screenshaker.gd:35-39
+    {
+        CurIntensity = 0.f; CurDuration = 0.f;
+        if (ActiveShake) { CameraManager->StopCameraShake(ActiveShake, true); ActiveShake = nullptr; }
+        return;
+    }
+    CurDuration -= DeltaTime;              // 对应 screenshaker.gd:41
 }
 ```
 
@@ -947,9 +998,9 @@ void UFxSubsystem::Shake(float Intensity, float DurationSec)
 |---|---|
 | 方向 | `(0, -80)`（上移 80 px） |
 | 扩散 | `±PI/4`（±22.5°） |
-| 时长 | **0.5 s**（属性/收获 **1.0 s**） |
-| 上限 | **100**（对象池预热 50） |
-| 动画 | 三条并行：position **ELASTIC/OUT**、scale→0 **ELASTIC/IN_OUT**、alpha→0 **LINEAR** |
+| 单段时长 | **0.5 s**（属性/收获 **1.0 s**）；**总寿命 = 2 × 单段**（伤害/治疗 1.0 s，属性/收获 2.0 s） |
+| 上限 | **100**（对象池预热 50；计数在回收时递减，按总寿命占用） |
+| 动画 | **两段串行**（`floating_text.gd:17-38`）：① position **ELASTIC/OUT**；② 位移结束后 scale→0 **ELASTIC/IN_OUT** 与 alpha→0 **LINEAR** 并行 |
 | 颜色 | 暴击=黄 / miss=深灰 / 治疗=绿 / 玩家受伤=红 |
 | 开关 | `Settings.bDamageDisplay` 关闭时直接 return |
 | 例外 | 玩家受伤飘字 `bAlwaysDisplay = true`，不受上限丢弃 |
@@ -995,6 +1046,7 @@ FVector2D FEnemyState::GetNextKnockbackValue(float DeltaTime)
 |---|---|
 | 玩家 KBR | 0 → 乘 **100** |
 | 衰减 | `Exp(-6.3216·dt)` → 0.364 s 到 10%，0.728 s 到 1%（原作 0.37 / 0.73 s，P1 容差内） |
+| ★ 总位移偏差 | 原作逐帧 `×0.9`，离散位移和 = `v0·(1+0.9+0.81+…)/60 = v0·10/60 ≈ 0.1667·v0`；连续指数积分 = `v0/6.3216 ≈ 0.1582·v0`，比值 `10/60 ÷ (1/6.3216) ≈ 1.0536`。不补偿则击退总位移约小 5%，**超出 P1 的 ±2% 容差**。实现：击退初速乘常量 `KnockbackInitialScale = 1.0536`，或在 00 §2.3 校验处把击退登记为已知偏差 |
 | 攻击方向 | **取负** `-Vector2(cos θ, sin θ)` |
 | 死亡击退下限 | **15.0** |
 | 击退期间 | 敌人 Hitbox 关闭（`KnockbackLen > MoveInputLen`） |
@@ -1043,20 +1095,27 @@ void UEnemySubsystem::StepBurning(FEnemyState& E, float DeltaTime)
 {
     if (E.Burning.TicksLeft <= 0) return;
     E.Burning.TickTimer -= DeltaTime;
-    if (E.Burning.TickTimer > 0.f) return;
 
-    E.Burning.TickTimer += E.Burning.TickInterval;   // ★ 累加而非重置，避免长帧丢 tick
-    --E.Burning.TicksLeft;                           // ★ 原作 duration 是 tick 次数
+    // ★ 必须 while 而非 if：单帧跨过多个间隔（低帧率/长帧）时要补齐所有 tick，否则下面「累加而非重置」的说明不成立
+    while (E.Burning.TickTimer <= 0.f && E.Burning.TicksLeft > 0)
+    {
+        E.Burning.TickTimer += E.Burning.TickInterval;   // ★ 累加而非重置，避免长帧丢 tick
+        --E.Burning.TicksLeft;                           // ★ 原作 duration 是 tick 次数
 
-    FDamageRequest Req;
-    Req.Damage = FMath::Max(1, BrotatoMathInt::BrotatoRound(
-        (E.Burning.Damage + Snapshot.ElementalDamage) * (1.f + Snapshot.PercentDamage / 100.f)));
-    Req.bDodgeable = false;     // ★ 无视闪避
-    Req.bArmorApplied = false;  // ★ 无视护甲
-    FBrotatoDamagePipeline::ApplyToEnemy(E, Req, Rng);
+        FDamageRequest Req;
+        Req.Damage = FMath::Max(1, BrotatoMathInt::BrotatoRound(
+            (E.Burning.Damage + Snapshot.ElementalDamage) * (1.f + Snapshot.PercentDamage / 100.f)));
+        Req.bDodgeable = false;     // ★ 无视闪避
+        Req.bArmorApplied = false;  // ★ 无视护甲
+        FBrotatoDamagePipeline::ApplyToEnemy(E, Req, Rng);
+        if (E.Health <= 0) break;   // 已死亡不再补 tick
+    }
 }
 
-/** 点燃：★ 逐字段取最大值刷新，不叠层 */
+/** 点燃：★ 逐字段取最大值刷新，不叠层
+ *  ⚠️ **Tier A/B（GE 版）语义不同**：GE 堆叠刷新只刷新 Duration，**不会更新首个 Spec 的 SetByCaller 伤害**，因此不是「取最大值」。
+ *  Tier A/B 点燃时应：先 `RemoveActiveGameplayEffect` 旧燃烧 GE，再 Apply 新 Spec（Spec 里写入合并后的 Damage/Ticks）。
+ *  GE 资产上的 `Period` 必须为非 0，Spec 上的 `Period` 仅是覆写（见 09 §2.2）。 */
 void ApplyBurning(FEnemyState& E, const FBurningData& BD, float Reduction)
 {
     E.Burning.Damage    = FMath::Max(E.Burning.Damage,    BD.Damage);
@@ -1143,21 +1202,36 @@ class ATurret : public AActor
     FWeaponRuntimeStats Runtime;
     float CooldownRemaining = 0.f;      // ★ 秒
 
+    bool bIsShooting = false;
+
+    // ★ 对齐 turret.gd:25-53 / 95-99：
+    //   - 冷却 **只在「射击动画结束后」** 才设置，不是每次到期就重掷；
+    //   - 只有目标位于 [min_range, max_range] 内才开火；无目标时不重掷，一旦敌人出现立即开火；
+    //   旧版「每次到期都重掷冷却」会让敌人出现后还要再等一整个冷却，DPS 偏低。
     virtual void Tick(float DeltaTime) override
     {
-        CooldownRemaining -= DeltaTime;
-        if (CooldownRemaining > 0.f) return;
+        CooldownRemaining = FMath::Max(CooldownRemaining - DeltaTime, 0.f);
+        if (CooldownRemaining > 0.f || bIsShooting) return;
 
-        // ★ 炮塔冷却随机化：rand_range(max(1/60, cd×0.7), cd×1.3)，不取整
-        CooldownRemaining = Rng.RandRange(
+        const int32 T = FWeaponFireCore::SelectTarget(/*Min/Max range*/ ...);
+        if (T == INDEX_NONE) return;                       // 无目标：不重掷冷却
+        bIsShooting = true;
+        PlayShootAnimation();                              // 动画回调里 FireNow()，结束后调 OnShootFinished()
+    }
+
+    void FireNow()
+    {
+        FWeaponFireCore::SpawnProjectiles(this, ProjectileSubsystem, RngCombat);   // ★ 注明分流：Combat 流
+        CueProxy->ExecuteCueAtLocation(Cue_Weapon_RangedFire, GetActorLocation(), ...);
+    }
+
+    void OnShootFinished()     // 对应 _on_AnimationPlayer_animation_finished
+    {
+        bIsShooting = false;
+        // ★ 炮塔冷却随机化：rand_range(max(1/60, cd×0.7), cd×1.3)，不取整（cd 已含 structures_cooldown_reduction）
+        CooldownRemaining = RngCombat.RandRange(
             FMath::Max(BrotatoConst::MinJitteredCooldown, Runtime.CooldownSeconds * 0.7f),
             Runtime.CooldownSeconds * 1.3f);
-
-        if (const int32 T = FWeaponFireCore::SelectTarget(...); T != INDEX_NONE)
-        {
-            FWeaponFireCore::SpawnProjectiles(this, ProjectileSubsystem, Rng);
-            CueProxy->ExecuteCueAtLocation(Cue_Weapon_RangedFire, GetActorLocation(), ...);
-        }
     }
 };
 ```
@@ -1167,7 +1241,8 @@ class ATurret : public AActor
 
 工程系数（§02 §9.3）：标准炮塔 10 / ×0.8；激光 20 / ×1.25；火箭 25 / ×1.5；治疗 3 / ×0.05；地雷 10 / ×1.0。
 
-冷却缩减（秒）：`new_cd = max(1/30, base_cd × 1/(1+total))`（total>0）或 `max(1/30, base_cd × (1+|total|))`。
+冷却缩减：**炮塔射击间隔**（秒）`new_cd = max(1/30, base_cd × 1/(1+total))`（total>0）或 `max(1/30, base_cd × (1+|total|))`（`ApplyReductionToTurretCooldownSeconds`）。
+★ 结构物**生成周期** `spawn_cooldown` 是整数秒、下限 2 s、结果保持整数，用 `ApplyReductionToSpawnCooldownSeconds`（D05 §10 / 05 §3），**不要**复用本式。
 生成半径：`min(600, 400 + Hook.Structures.Num() × 10)`；`spawn_cooldown == -1` 表示**仅波首生成一次**。
 生成检查周期：**1.0 s**（用 `FTimerManager` 循环，原作每 60 帧）。
 
@@ -1197,10 +1272,10 @@ class ATurret : public AActor
 | B05 | Cooldown GE | 攻击序列进行中冷却不流逝；结束后开始计时；UI 读数与实际一致 |
 | V01 | 白闪 | 恰好 0.1 s；闪避/免伤时不白闪 |
 | V02 | 屏震方向 | 采样 1000 次，偏移 x/y 全部 ≥ 0 |
-| V03 | 屏震覆盖 | 同一 Tick 先受 3 伤(强度1)再受 30 伤(强度3) → 最终强度 **1** |
+| V03 | 屏震覆盖 | 同一帧先受 3 伤(强度1)再受 30 伤(强度3) → 最终强度 **1**；跨帧（次帧）再受 30 伤 → 覆盖为强度 **3**，剩余时长重置 0.1 s |
 | V05 | 飘字上限 | 同屏 >100 被丢弃，但玩家受伤飘字仍显示 |
 | V06 | 子弹延迟 | 发射后 0.02 s 内原地不动，之后开始移动 |
-| V07 | 爆炸窗口 | 敌人在 0.1 s 后进入范围 → 不受伤 |
+| V07 | 爆炸窗口 | 敌人在 0.05 s 后进入范围 → 不受伤（参数表 §10 与 00 §2.2 均为 0.05 s，旧稿 0.1 s 为笔误） |
 | V08 | 音效并发 | 连续 50 次命中 → 并发不超 12（`USoundConcurrency` 生效） |
 | V09 | 音效时机 | 近战音效播放时刻 < hitbox 开启时刻 |
 | **V10** | ★ 燃烧 tick 完整性 | 在 15 fps 极限下燃烧总 tick 数与 60 fps 一致（累加式计时验证） |
