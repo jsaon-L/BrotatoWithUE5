@@ -144,8 +144,8 @@ private:
 | S7b | Tier A: `TryActivateAbility(GA_WeaponAttack)` / Tier C: `FWeaponFireCore::Fire()` | GAS / Gameplay | D04 §5 |
 | S7c | 挥击时序推进（`UAbilityTask` 自带 Tick，按秒 + Curve） | GAS | D04 §6 |
 | S8 | 投射物批更新（含 `ProjectileLaunchDelay` 累减） | Gameplay | D04 §8 |
-| S9a | 命中判定 → 玩家/Boss → `ApplyGameplayEffectToTarget(GE_Damage)` | GAS | D03 §4 |
-| S9b | 命中判定 → 普通敌人 → `FBrotatoDamagePipeline::ApplyToEnemy()` | Gameplay | D05 §5 |
+| S9a | 命中判定 → Tier A/B（玩家/Boss/精英）→ `FBrotatoGasDamage::Apply()`；路由 `GE_Damage` / `GE_Damage_Bypass` / `GE_Damage_Enemy` | Gameplay → GAS | D03 §4.5 |
+| S9b | 命中判定 → Tier C → `FBrotatoDamagePipeline::ApplyToEnemy()` | Gameplay | D03 §4.7 |
 | S10 | 拾取物吸附与结算 | Gameplay | D05 §7 |
 | S11 | 属性脏标记统一处理：`LinkedStats GE 重算` → `武器 RuntimeStats 重算` → `广播 UI` | GAS / Gameplay / UI | D02 §5 / D04 §2 / D06 §3 |
 | S12 | 死亡清理 + 对象回收 | Gameplay | D05 §9 |
@@ -244,7 +244,8 @@ FBrotatoRandom& Rng = GetWorld()->GetSubsystem<UBrotatoRunSubsystem>()
 |---|---|
 | 一局开始 | 用 `RunSeed` 派生全部 `Count` 个流；`RunSeed` 存入 `run_state`，续关恢复 |
 | Daily Run | `RunSeed = 日期哈希` |
-| ExecCalc / MMC 内 | **必须**从 `UBrotatoRunSubsystem` 取 `Combat` 流，不得新建 Stream |
+| Instant 伤害 ExecCalc | `FBrotatoGasDamage::Apply` 在 Gameplay 层取 RunSubsystem 的 `Combat` 流，经 Context 同步注入；ExecCalc 不依赖 `BrotatoGameplay`，不得自建 Stream（D03 §4.3–4.5） |
+| MMC / Periodic Execution | 不得直接跨模块访问 RunSubsystem，也不得复用 Instant Context 的短期随机指针；需要随机性时由上层提供满足生命周期的接口，纯属性 MMC 不消耗 Combat 流 |
 | 屏震 / 音高 / 粒子 | 用 `Cosmetic` 流（或直接 `FMath::FRand()`），**不得**污染其他流的调用序 |
 | UI 预览 / 纯展示 | 允许用独立临时 Stream |
 
@@ -485,10 +486,11 @@ FORCEINLINE float GetInvincibilitySeconds(float DamageTaken, float MaxHealth, fl
 |---|---|---|---|
 | 无敌时长 | 0.4 s | 0.3 s | 0.2 s |
 
-> **实现（D03）**：受击结算后 Apply `GE_Invincible`（Duration GE，时长 = 上式，授予 `State.Invincible`）；
-> `GE_Damage` 的 `ApplicationTagRequirements.IgnoreTags` 含 `State.Invincible` → 窗口内伤害**自动被拒**，无需任何 if。
-> `bypass_invincibility = true` 的伤害（如 `lose_hp_per_second`）用**另一个 GE**（不带该 Tag 需求，且不施加 `GE_Invincible`）。
-> **闪避成功也进入无敌窗口**（只要 `bDodgeable`）。
+> **实现（D03 §4.1 / §4.5）**：Tier A/B 的 Instant 伤害统一经 `FBrotatoGasDamage::Apply`，不直接施加 `GE_Damage*`。
+> 玩家 `GE_Damage` 在 `UTargetTagRequirementsGameplayEffectComponent` 中配置 `ApplicationTagRequirements.IgnoreTags = Brotato.State.Invincible`；被拒时不进入 ExecCalc，不消耗 Combat 随机数，也不派发受击后处理。
+> Bypass 请求选择 `GE_Damage_Bypass`（不带该应用条件）；ExecCalc 内不再重复拦截。Tier B 选择 `GE_Damage_Enemy`。
+> 成功结算后，仅玩家且 `bDodgeable` 时施加 `GE_Invincible`（Duration GE，时长 = 上式，以目标 Tag 组件授予 `State.Invincible`）。**闪避、免伤也触发**；Bypass 只控制是否越过现有窗口，不决定是否产生新窗口。
+> `lose_hp_per_second` 等不可闪避的周期伤害不产生窗口；Periodic GE 不能直接复用本入口的短期 Context 随机指针，见 D03 §4.4。
 
 ### 4.5 生命回复周期
 

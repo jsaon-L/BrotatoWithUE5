@@ -24,15 +24,16 @@ $$\text{CurrentValue}=\frac{\big(\text{Base}+\textstyle\sum\text{Additive}\big)\
 
 | 命名空间 | 用途 | 声明方式 |
 |---|---|---|
-| `Brotato.Attribute.*` | Tag ↔ Attribute 映射、UI 查询、`scaling_stats` 引用 | ini + `DT_TagAttributeMap` |
-| `Brotato.State.*` | 状态标记，驱动逻辑与表现 | ini |
-| `Brotato.Effect.*` | GE 分类，用于**批量移除** | ini |
-| `Brotato.Ability.*` | Ability 标签 / 阻断 / 事件触发 | ini |
-| `GameplayCue.Brotato.*` | GameplayCue（★ 必须位于 `GameplayCue.` 根下，否则 CueManager 不路由） | ini |
-| `Brotato.Data.*` | SetByCaller 键 | ini |
-| `Brotato.Rule.*` | 规则开关（对应原作 bool 型 effects） | ini |
-| `Brotato.Hook.*` | HookRegistry 槽位键 | ini |
-| `Brotato.Set.*` | 15 武器职业 | ini |
+| `Brotato.Attribute.*` | Tag ↔ Attribute 映射、UI 查询、`scaling_stats` 引用 | Native Tag + `DT_TagAttributeMap` |
+| `Brotato.State.*` | 状态标记，驱动逻辑与表现 | 核心用 Native Tag；策划扩展状态用 ini |
+| `Brotato.Effect.*` | GE 分类，用于**批量移除** | Native Tag |
+| `Brotato.Ability.*` | Ability 标签 / 阻断 / 事件触发 | Native Tag |
+| `GameplayCue.Brotato.*` | GameplayCue（★ 必须位于 `GameplayCue.` 根下，否则 CueManager 不路由） | Native Tag |
+| `Brotato.Data.*` | SetByCaller 键 / AssetTags 参数标记 | Native Tag |
+| `Brotato.Enemy.*` | 伤害规则需要的实体身份（如真 Boss） | Native Tag |
+| `Brotato.Rule.*` | 规则开关（对应原作 bool 型 effects） | Native Tag |
+| `Brotato.Hook.*` | HookRegistry 槽位键 | Native Tag |
+| `Brotato.Set.*` | 15 武器职业 | Native Tag |
 
 ### 1.2 `Config/DefaultGameplayTags.ini`（骨架，实现时展开全部条目）
 
@@ -148,7 +149,10 @@ $$\text{CurrentValue}=\frac{\big(\text{Base}+\textstyle\sum\text{Additive}\big)\
 +GameplayTagList=(Tag="Brotato.Cooldown.Weapon.0")           ; …Weapon.5，6 槽各一个，供 UI 与 GetCooldownTags 使用
 +GameplayTagList=(Tag="Brotato.Ability.Blocked.CannotAttackWhileMoving")
 
-; ──────────── Data（SetByCaller 键） ────────────
+; ──────────── Enemy（实体身份，不是刷怪组分类；核心 Tag 在 §1.3 原生注册） ────────────
++GameplayTagList=(Tag="Brotato.Enemy.Boss")
+
+; ──────────── Data（SetByCaller 键 / AssetTags 参数标记） ────────────
 ; ★ 通用键 Data.Damage / Data.Duration / Data.Cooldown / Data.Period 供燃烧、冷却、Buff 复用；
 ;   原 Data.BurnDamage / Data.BurnDuration 与实际用法（D03 用 Data.Damage / Data.Duration）不一致，已删除。
 +GameplayTagList=(Tag="Brotato.Data.Damage")
@@ -158,6 +162,11 @@ $$\text{CurrentValue}=\frac{\big(\text{Base}+\textstyle\sum\text{Additive}\big)\
 +GameplayTagList=(Tag="Brotato.Data.Healing")
 +GameplayTagList=(Tag="Brotato.Data.CritChance")
 +GameplayTagList=(Tag="Brotato.Data.CritDamage")
++GameplayTagList=(Tag="Brotato.Data.DamageAgainstBosses")
++GameplayTagList=(Tag="Brotato.Data.GiantCritDamage")
++GameplayTagList=(Tag="Brotato.Data.EndlessFactor")
+; 下列 KnockbackAmount / BypassInvincibility 保留字典兼容性；D03 §4 不读取它们。
+; 击退由调用方处理，Bypass 由 PlayerBypass 路由选择独立 GE。
 +GameplayTagList=(Tag="Brotato.Data.KnockbackAmount")
 +GameplayTagList=(Tag="Brotato.Data.BypassInvincibility")
 +GameplayTagList=(Tag="Brotato.Data.NotDodgeable")
@@ -234,6 +243,14 @@ namespace BrotatoTags
     BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Cooldown);
     BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Duration);
     BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Period);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_CritChance);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_CritDamage);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_NotDodgeable);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_NoArmor);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_DamageAgainstBosses);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_GiantCritDamage);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_EndlessFactor);
+    BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Enemy_Boss);
     BROTATOGAS_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Rule_CanAttackWhileMoving);
 }
 ```
@@ -252,6 +269,14 @@ namespace BrotatoTags
     UE_DEFINE_GAMEPLAY_TAG(Data_Cooldown,           "Brotato.Data.Cooldown");
     UE_DEFINE_GAMEPLAY_TAG(Data_Duration,           "Brotato.Data.Duration");
     UE_DEFINE_GAMEPLAY_TAG(Data_Period,             "Brotato.Data.Period");
+    UE_DEFINE_GAMEPLAY_TAG(Data_CritChance,         "Brotato.Data.CritChance");
+    UE_DEFINE_GAMEPLAY_TAG(Data_CritDamage,         "Brotato.Data.CritDamage");
+    UE_DEFINE_GAMEPLAY_TAG(Data_NotDodgeable,       "Brotato.Data.NotDodgeable");
+    UE_DEFINE_GAMEPLAY_TAG(Data_NoArmor,            "Brotato.Data.NoArmor");
+    UE_DEFINE_GAMEPLAY_TAG(Data_DamageAgainstBosses,"Brotato.Data.DamageAgainstBosses");
+    UE_DEFINE_GAMEPLAY_TAG(Data_GiantCritDamage,    "Brotato.Data.GiantCritDamage");
+    UE_DEFINE_GAMEPLAY_TAG(Data_EndlessFactor,      "Brotato.Data.EndlessFactor");
+    UE_DEFINE_GAMEPLAY_TAG(Enemy_Boss,              "Brotato.Enemy.Boss");
     // …
 }
 ```
@@ -265,7 +290,18 @@ namespace BrotatoTags
 | `FBrotatoTags::Get().Xxx` | ❌ **废弃**。它是运行时单例，在 CDO 构造期取用存在 Tag 管理器尚未初始化的顺序风险 |
 
 > `DefaultGameplayTags.ini` / `DT_GameplayTags` 只用于**策划需在编辑器里随时增删的标签**（如敌人分组、Boss 阶段），
-> 不用于上述任何核心 Tag。
+> 不用于上述任何核心 Tag。§1.2 的核心条目仅作字典对照，不与 §1.3 的 Native Tag 重复注册；业务使用处包含 `BrotatoNativeTags.h`。
+
+伤害管道补充约定（D03 §4）：
+
+| Native Tag | 完整名称 | 用途 / 单位 |
+|---|---|---|
+| `Enemy_Boss` | `Brotato.Enemy.Boss` | 目标实体是真 Boss；精英即使共用 Boss 类或刷怪组也不授予 |
+| `Data_DamageAgainstBosses` | `Brotato.Data.DamageAgainstBosses` | SetByCaller，百分数：20 = +20% |
+| `Data_GiantCritDamage` | `Brotato.Data.GiantCritDamage` | SetByCaller，沿用 D01 `GiantCritBonus` 的原始数值；不预先除 100/1000 |
+| `Data_EndlessFactor` | `Brotato.Data.EndlessFactor` | SetByCaller，无尽因子，与 Tier C 同值 |
+
+`Data_NotDodgeable` / `Data_NoArmor` 是 **Spec AssetTags**，不是目标 GrantedTags；`CritChance` 的 SetByCaller 是 0~1。玩家 `Dodge` 属性存百分数，`_Player` 在进入 D01 `Resolve` 前 `/100`，`DodgeCap` 保持百分数。
 
 ### 1.4 `DT_TagAttributeMap`（Tag → FGameplayAttribute）
 
@@ -424,20 +460,69 @@ public:
 
 ### 2.6 `UBrotatoEnemyAttributeSet`（Tier B 专用，精简）
 
+头文件包含 `AttributeSet.h`、`AbilitySystemComponent.h`，并使用 §2.1 的公共 `ATTRIBUTE_ACCESSORS` 宏定义（放在共享头中）；`BrotatoEnemyAttributeSet.generated.h` 必须是最后一个 include。`FGameplayEffectModCallbackData` 在头文件前置声明，下面的实现文件另包含 `GameplayEffectExtension.h`。
+
 ```cpp
+DECLARE_MULTICAST_DELEGATE_TwoParams(FBrotatoEnemyDamaged, float, const FGameplayEffectSpec&);
+DECLARE_MULTICAST_DELEGATE(FBrotatoEnemyDied);
+
 UCLASS()
 class BROTATOGAS_API UBrotatoEnemyAttributeSet : public UAttributeSet
 {
     GENERATED_BODY()
 public:
     UPROPERTY() FGameplayAttributeData Health;
+    ATTRIBUTE_ACCESSORS(UBrotatoEnemyAttributeSet, Health)
     UPROPERTY() FGameplayAttributeData MaxHealth;
+    ATTRIBUTE_ACCESSORS(UBrotatoEnemyAttributeSet, MaxHealth)
     UPROPERTY() FGameplayAttributeData Damage;
+    ATTRIBUTE_ACCESSORS(UBrotatoEnemyAttributeSet, Damage)
     UPROPERTY() FGameplayAttributeData Armor;
+    ATTRIBUTE_ACCESSORS(UBrotatoEnemyAttributeSet, Armor)
     UPROPERTY() FGameplayAttributeData Speed;
+    ATTRIBUTE_ACCESSORS(UBrotatoEnemyAttributeSet, Speed)
     UPROPERTY() FGameplayAttributeData IncomingDamage;
+    ATTRIBUTE_ACCESSORS(UBrotatoEnemyAttributeSet, IncomingDamage)
+
+    FBrotatoEnemyDamaged OnDamaged;
+    FBrotatoEnemyDied OnDied;
+    virtual void PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data) override;
 };
 ```
+
+```cpp
+void UBrotatoEnemyAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data)
+{
+    Super::PostGameplayEffectExecute(Data);
+
+    if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
+    {
+        const float Dmg = GetIncomingDamage();
+        SetIncomingDamage(0.f);
+        const float OldHealth = GetHealth();
+        if (!FMath::IsFinite(Dmg) || Dmg <= 0.f || OldHealth <= 0.f)
+            return;
+
+        const float NewHealth = FMath::Clamp(OldHealth - Dmg, 0.f, FMath::Max(0.f, GetMaxHealth()));
+        SetHealth(NewHealth);
+        OnDamaged.Broadcast(Dmg, Data.EffectSpec);
+        if (NewHealth <= 0.f)
+            OnDied.Broadcast();
+    }
+    else if (Data.EvaluatedData.Attribute == GetMaxHealthAttribute())
+    {
+        SetMaxHealth(FMath::Max(0.f, GetMaxHealth()));
+        SetHealth(FMath::Clamp(GetHealth(), 0.f, GetMaxHealth()));
+    }
+}
+```
+
+接入约束：
+- 生成时先向 ASC 注册该属性集，再初始化 `MaxHealth`、`Health`、`Armor` 等数值；`Health > 0` 后才启用受击。不要把 Enemy 的同名属性当成 Core 属性，它们是不同的 `FGameplayAttribute`。
+- `GE_Damage_Enemy` 使用 `UBrotatoDamageExecCalc_Enemy`，输出 **Enemy 集**的 `IncomingDamage`；仅声明元属性而没有上述消费回调，不会自动扣 `Health`。
+- `OnDied` 只由伤害导致的存活→死亡转换触发，死亡后的再次伤害只清零元属性。监听者在 D05 的死亡/掉落流程排队处理回收，不在回调中重入伤害或销毁正在执行回调的对象。
+- 这是伤害路径示例；若其他系统直接置零生命，或通过降低 `MaxHealth` 导致死亡，应调用同一死亡入口并做幂等保护。Infinite GE 改变 `MaxHealth` 时同样需要 §6.2 所述的属性变化监听，不能只依赖此回调。
+- 真 Boss 的 `Enemy_Boss` Tag 由实体生成逻辑管理，见 D05 §4；不得因属性集类型相同就将精英判成 Boss。
 
 ---
 

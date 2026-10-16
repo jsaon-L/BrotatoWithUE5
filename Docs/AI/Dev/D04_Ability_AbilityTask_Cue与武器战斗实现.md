@@ -711,6 +711,8 @@ void UCombatSubsystem::ProcessMeleeHitboxes()
 
 Hitbox extents 全表见 `Docs/04 §8.5`，逐武器照抄进 `DT_Weapons.HitboxExtents`。
 
+`ApplyWeaponHit` 的伤害适配统一构造 `FDamageRequest`：Tier A/B 经 `FBrotatoGasDamage::Apply`（D03 §4.5），Tier C 经 `FBrotatoDamagePipeline::ApplyToEnemy`（D03 §4.7）。前者按玩家/Bypass/敌人选择 `GE_Damage` / `GE_Damage_Bypass` / `GE_Damage_Enemy`，禁止调用方直接施加 `GE_Damage*` 或共用可写 Context。无 ASC 的攻击来源须由 Gameplay 层提供有效的伤害代理 SourceASC，并保留真实来源信息；不能传空指针，也不能为了施加一次伤害给每个 Tier C 敌人新增 ASC。
+
 ---
 
 ## 8. 远程与投射物
@@ -827,6 +829,8 @@ void UProjectileSubsystem::OnCriticalHit(FProjectileInstance& P)
     // "effect_pierce_on_crit" → ++Piercing，同上
 }
 ```
+
+本节 `OnHit` 展示命中后的弹射/穿透状态推进；本次伤害应在这些“下次命中伤害衰减”之前按 §7 的统一适配入口结算。Tier A/B 从 `FBrotatoGasDamage::Apply` 的结果读取暴击/闪避，命中 Cue 已由该入口经 §9.3 限流派发，调用方不要重复播放；只有成功施加的结果才进入相应受击后处理。
 
 ### 8.4 吸血（★ 与伤害数值无关）
 
@@ -1266,7 +1270,7 @@ class ATurret : public AActor
 | W12 | 挂点 | 6 把武器坐标 = §1.1 表第 6 行（相对玩家再 y−24） |
 | **W13** | ★ **帧率无关** | 30 / 60 / 144 / 240 fps 下连续 100 次攻击的平均间隔误差 < 1%，总攻击次数误差 < 2% |
 | B01 | Tag 拦截 | Soldier 移动时 `CanActivateAbility == false` |
-| B02 | 无敌窗口 | 窗口内 `GE_Damage` 被 `ApplicationTagRequirements` 拒绝（GE 未进入 ExecCalc） |
+| B02 | 无敌窗口 | 经 `FBrotatoGasDamage::Apply` 验证：窗口内 `GE_Damage` 被 `UTargetTagRequirementsGameplayEffectComponent.ApplicationTagRequirements` 拒绝，不进入 ExecCalc、不消耗 Combat 流；`GE_Damage_Bypass` 可通过，无 ExecCalc 二次拦截。成功后的玩家无敌窗口按 `bDodgeable` 决定（含闪避/免伤，D03 §4.5） |
 | B03 | 多 Spec | 6 把武器 6 个 Spec，各自独立 Cooldown GE（互不干扰） |
 | B04 | Task 时序 | MeleeSwing 三段时长与理论秒值误差 < 2%（含低帧余量结转正确） |
 | B05 | Cooldown GE | 攻击序列进行中冷却不流逝；结束后开始计时；UI 读数与实际一致 |
