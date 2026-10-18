@@ -1,0 +1,4 @@
+TagName,Category,Comment
+Character.State.Dead,Character,玩家
+Ability.Attack.Melee,Ability,攻击
+Character.State.HP,Character,血量

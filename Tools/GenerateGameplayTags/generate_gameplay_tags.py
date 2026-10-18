@@ -7,11 +7,13 @@ GameplayTag 代码生成脚本（支持父 Tag 自动补全）
 import csv
 import os
 import sys
+from pathlib import Path
 from collections import defaultdict, OrderedDict
 from datetime import datetime
 
 HEADER_WARNING = f"""// =====================================================
 // 本文件由脚本自动生成，请勿手动修改！
+// 来自脚本 Tools/GenerateGameplayTags/generate_gameplay_tags.py
 // 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 // 源表: GameplayTags.csv
 // =====================================================
@@ -202,17 +204,23 @@ def _write_if_changed(path, content):
 # main
 # -------------------------------------------------------------------
 def main():
-    if len(sys.argv) < 3:
-        print('Usage: python generate_gameplay_tags.py <csv> <out_dir> [ApiMacro]')
-        sys.exit(1)
 
-    csv_path  = sys.argv[1]
-    out_dir   = sys.argv[2]
-    api_macro = sys.argv[3] if len(sys.argv) > 3 else ''
+    # csv_path  = sys.argv[1]
+    # out_dir   = sys.argv[2]
+    # api_macro = sys.argv[3] if len(sys.argv) > 3 else ''
 
-    os.makedirs(out_dir, exist_ok=True)
 
-    tags = load_tags(csv_path)
+    # 拼接存放tag的源代码目录
+    script_dir = Path(__file__).resolve().parent
+    tagCsvFile = script_dir.parent.parent / "Config/tags.csv"
+    tagHeaderDir = script_dir.parent.parent / "Source/BrotatoWithUE5/Public/BrotatoGAS/Tags"
+    tagSourcesDir = script_dir.parent.parent / "Source/BrotatoWithUE5/Private/BrotatoGAS/Tags"
+
+
+    os.makedirs(tagHeaderDir, exist_ok=True)
+    os.makedirs(tagSourcesDir, exist_ok=True)
+
+    tags = load_tags(tagCsvFile)
     before = len(tags)
     tags = expand_parents(tags)
     after = len(tags)
@@ -222,10 +230,13 @@ def main():
         print('[FATAL] 校验失败，终止')
         sys.exit(2)
 
-    gen_header(tags, os.path.join(out_dir, 'BrotatoTags.h'), api_macro)
-    gen_source(tags, os.path.join(out_dir, 'BrotatoTags.cpp'), 'Tags/BrotatoTags.h')
+
+
+    gen_header(tags, os.path.join(tagHeaderDir, 'BrotatoNativeTags.h'), '')
+    gen_source(tags, os.path.join(tagSourcesDir, 'BrotatoNativeTags.cpp'), 'BrotatoGAS/Tags/BrotatoNativeTags.h')
     # gen_ini   (tags, os.path.join(out_dir, 'DefaultGameplayTags.ini'))
     print('[OK] 生成完成')
 
 if __name__ == '__main__':
     main()
+
