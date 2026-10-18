@@ -15,7 +15,10 @@ public class BrotatoWithUE5 : ModuleRules
 			"Engine", 
 			"InputCore", 
 			"EnhancedInput",
-			"GameplayTags"
+			"GameplayTags",
+			"GameplayAbilities",
+			"GameplayTasks",
+			"UMG"
 			
 		});
 
