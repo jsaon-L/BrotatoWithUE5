@@ -1,4 +1,4 @@
 TagName,Category,Comment
-Character.State.Dead,Character,玩家
+BRTAbilities.ActivateOnGiven,AutoActivate,授予Ability自动激活AssetTag
 Ability.Attack.Melee,Ability,攻击
 Character.State.HP,Character,血量
