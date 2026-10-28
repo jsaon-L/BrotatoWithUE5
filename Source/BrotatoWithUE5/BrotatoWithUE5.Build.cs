@@ -18,7 +18,8 @@ public class BrotatoWithUE5 : ModuleRules
 			"GameplayTags",
 			"GameplayAbilities",
 			"GameplayTasks",
-			"UMG"
+			"UMG",
+			"Paper2D"
 			
 		});
 

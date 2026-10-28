@@ -5,11 +5,15 @@
 #include "CoreMinimal.h"
 #include "AbilitySystemInterface.h"
 #include "GameFramework/Character.h"
+#include "PaperCharacter.h"
 #include "BRT_BaseCharacter.generated.h"
 
+
+struct FOnAttributeChangeData;
+class UAttributeSet;
 //TODO:目前玩家和敌人都从此类扩展,可是敌人其实不需要这么重的Character,可以从Actor或者其他渲染方式驱动,后续优化
 UCLASS()
-class BROTATOWITHUE5_API ABRT_BaseCharacter : public ACharacter,public IAbilitySystemInterface
+class BROTATOWITHUE5_API ABRT_BaseCharacter : public APaperCharacter,public IAbilitySystemInterface
 {
 	GENERATED_BODY()
 
