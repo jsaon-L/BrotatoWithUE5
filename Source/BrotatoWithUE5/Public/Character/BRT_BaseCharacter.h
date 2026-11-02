@@ -20,6 +20,17 @@ class BROTATOWITHUE5_API ABRT_BaseCharacter : public APaperCharacter,public IAbi
 public:
 	// Sets default values for this character's properties
 	ABRT_BaseCharacter();
+	
+	//私有变量蓝图只读 需要添加 meta = (AllowPrivateAccess = "true")
+	UPROPERTY(blueprintreadonly, meta = (AllowPrivateAccess = "true"))
+	bool bAlive = true;
+
+	bool IsAlive() const { return bAlive; }
+	void SetAlive(bool bNewAlive) { bAlive = bNewAlive; }
+	
+
+	virtual void HandleDeath();
+	virtual void HandleRespawn();
 
 private:
 

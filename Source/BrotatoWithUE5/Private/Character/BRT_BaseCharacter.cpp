@@ -24,6 +24,18 @@ ABRT_BaseCharacter::ABRT_BaseCharacter()
 	AttributeSet = CreateDefaultSubobject<UBRT_AttributeSet>("AttributeSet");
 }
 
+void ABRT_BaseCharacter::HandleDeath()
+{
+	bAlive = false;
+}
+
+void ABRT_BaseCharacter::HandleRespawn()
+{
+	bAlive = true;
+}
+
+
+
 // Called when the game starts or when spawned
 void ABRT_BaseCharacter::BeginPlay()
 {
@@ -63,6 +75,6 @@ void ABRT_BaseCharacter::OnHealthChanged(const FOnAttributeChangeData& Data)
 {
 	if (Data.NewValue <= 0)
 	{
-		// HandleDeath();
+		HandleDeath();
 	}
 }
