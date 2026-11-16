@@ -7,8 +7,25 @@
 #include "Animation/BRT_PaperDollAnimData.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/SphereComponent.h"
 #include "PaperSprite.h"
 #include "PaperSpriteComponent.h"
+
+
+namespace
+{
+	/** 判定范围统一配置：QueryOnly + 只与动态物体/角色产生 Overlap（Godot 侧三者都是 Area2D） */
+	void ConfigureOverlapArea(USphereComponent* Area, float Radius)
+	{
+		Area->InitSphereRadius(Radius);
+		Area->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		Area->SetCollisionObjectType(ECC_WorldDynamic);
+		Area->SetCollisionResponseToAllChannels(ECR_Ignore);
+		Area->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Overlap);
+		Area->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+		Area->SetGenerateOverlapEvents(true);
+	}
+}
 
 
 // Sets default values
@@ -53,6 +70,118 @@ ABRT_PlayerCharacter::ABRT_PlayerCharacter()
 	LegRSprite->SetRelativeLocation(FVector(-2.f, 0.f, -7.5f));
 	LegRSprite->SetTranslucentSortPriority(0);
 
+	// ---- 影子 / 高亮（Godot Animation/Shadow、Animation/Highlight，随身体一起做动画） ----
+
+	ShadowSprite = CreateDefaultSubobject<UPaperSpriteComponent>(TEXT("ShadowSprite"));
+	ShadowSprite->SetupAttachment(PaperDollBody);
+	ShadowSprite->SetRelativeLocation(FVector(0.f, 0.f, -38.f)); // Godot Shadow (0,38)
+	// Godot scale (1,-0.3) = 垂直翻转 + 压扁；对左右对称的影子，视觉等价于只把 Z 压到 0.3
+	ShadowSprite->SetRelativeScale3D(FVector(1.f, 1.f, 0.3f));
+	ShadowSprite->SetSpriteColor(FLinearColor(0.f, 0.f, 0.f, 0.392157f)); // Godot modulate (0,0,0,0.392)
+	ShadowSprite->SetTranslucentSortPriority(-2); // 最底层
+	ShadowSprite->SetCastShadow(false);
+	ShadowSprite->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	HighlightSprite = CreateDefaultSubobject<UPaperSpriteComponent>(TEXT("HighlightSprite"));
+	HighlightSprite->SetupAttachment(PaperDollBody);
+	HighlightSprite->SetRelativeLocation(FVector(0.f, 0.f, -36.f)); // Godot Highlight (0,36)
+	HighlightSprite->SetSpriteColor(FLinearColor(0.447059f, 1.f, 0.94902f, 1.f)); // Godot modulate (0.447,1,0.949)
+	HighlightSprite->SetTranslucentSortPriority(-1); // 影子之上，腿与身体之下（Godot show_behind_parent）
+	HighlightSprite->SetCastShadow(false);
+	HighlightSprite->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	HighlightSprite->SetVisibility(false); // Godot visible = false
+
+	// ---- 武器挂点树（Godot Weapons/One..Six/AttachN）：只建挂点，不含槽位逻辑 ----
+
+	// 必须挂在 SpriteRoot 下：SpriteRoot 承载 2D 平面朝向（BP 中 rot=(Y90,R-90)，local XZ 对应世界 XY），
+	// 挂到胶囊根上会把 Z 偏移变成世界深度轴，画面上全部塌到一条线。
+	// Godot 里 Weapons 与 Animation 节点位置相同（都是精灵中心），故本地偏移为零。
+	WeaponsRoot = CreateDefaultSubobject<USceneComponent>(TEXT("WeaponsRoot"));
+	WeaponsRoot->SetupAttachment(SpriteRoot);
+	WeaponsRoot->SetRelativeLocation(FVector::ZeroVector);
+
+	// One：1 个挂点
+	WeaponSlot1 = CreateDefaultSubobject<USceneComponent>(TEXT("WeaponSlot1"));
+	WeaponSlot1->SetupAttachment(WeaponsRoot);
+	WeaponSlot1Attach1 = CreateWeaponAttachPoint(WeaponSlot1, TEXT("WeaponSlot1Attach1"), FVector2D(0.f, 30.f));
+
+	// Two：2 个挂点
+	WeaponSlot2 = CreateDefaultSubobject<USceneComponent>(TEXT("WeaponSlot2"));
+	WeaponSlot2->SetupAttachment(WeaponsRoot);
+	WeaponSlot2Attach1 = CreateWeaponAttachPoint(WeaponSlot2, TEXT("WeaponSlot2Attach1"), FVector2D(40.f, 20.f));
+	WeaponSlot2Attach2 = CreateWeaponAttachPoint(WeaponSlot2, TEXT("WeaponSlot2Attach2"), FVector2D(-40.f, 20.f));
+
+	// Three：3 个挂点
+	WeaponSlot3 = CreateDefaultSubobject<USceneComponent>(TEXT("WeaponSlot3"));
+	WeaponSlot3->SetupAttachment(WeaponsRoot);
+	WeaponSlot3Attach1 = CreateWeaponAttachPoint(WeaponSlot3, TEXT("WeaponSlot3Attach1"), FVector2D(40.f, 20.f));
+	WeaponSlot3Attach2 = CreateWeaponAttachPoint(WeaponSlot3, TEXT("WeaponSlot3Attach2"), FVector2D(-40.f, 20.f));
+	WeaponSlot3Attach3 = CreateWeaponAttachPoint(WeaponSlot3, TEXT("WeaponSlot3Attach3"), FVector2D(0.f, -45.f));
+
+	// Four：4 个挂点
+	WeaponSlot4 = CreateDefaultSubobject<USceneComponent>(TEXT("WeaponSlot4"));
+	WeaponSlot4->SetupAttachment(WeaponsRoot);
+	WeaponSlot4Attach1 = CreateWeaponAttachPoint(WeaponSlot4, TEXT("WeaponSlot4Attach1"), FVector2D(40.f, 35.f));
+	WeaponSlot4Attach2 = CreateWeaponAttachPoint(WeaponSlot4, TEXT("WeaponSlot4Attach2"), FVector2D(-40.f, 35.f));
+	WeaponSlot4Attach3 = CreateWeaponAttachPoint(WeaponSlot4, TEXT("WeaponSlot4Attach3"), FVector2D(-40.f, -30.f));
+	WeaponSlot4Attach4 = CreateWeaponAttachPoint(WeaponSlot4, TEXT("WeaponSlot4Attach4"), FVector2D(40.f, -30.f));
+
+	// Five：5 个挂点
+	WeaponSlot5 = CreateDefaultSubobject<USceneComponent>(TEXT("WeaponSlot5"));
+	WeaponSlot5->SetupAttachment(WeaponsRoot);
+	WeaponSlot5Attach1 = CreateWeaponAttachPoint(WeaponSlot5, TEXT("WeaponSlot5Attach1"), FVector2D(35.f, 35.f));
+	WeaponSlot5Attach2 = CreateWeaponAttachPoint(WeaponSlot5, TEXT("WeaponSlot5Attach2"), FVector2D(-35.f, 35.f));
+	WeaponSlot5Attach3 = CreateWeaponAttachPoint(WeaponSlot5, TEXT("WeaponSlot5Attach3"), FVector2D(-55.f, -20.f));
+	WeaponSlot5Attach4 = CreateWeaponAttachPoint(WeaponSlot5, TEXT("WeaponSlot5Attach4"), FVector2D(55.f, -20.f));
+	WeaponSlot5Attach5 = CreateWeaponAttachPoint(WeaponSlot5, TEXT("WeaponSlot5Attach5"), FVector2D(0.f, -55.f));
+
+	// Six：6 个挂点
+	WeaponSlot6 = CreateDefaultSubobject<USceneComponent>(TEXT("WeaponSlot6"));
+	WeaponSlot6->SetupAttachment(WeaponsRoot);
+	WeaponSlot6Attach1 = CreateWeaponAttachPoint(WeaponSlot6, TEXT("WeaponSlot6Attach1"), FVector2D(35.f, 45.f));
+	WeaponSlot6Attach2 = CreateWeaponAttachPoint(WeaponSlot6, TEXT("WeaponSlot6Attach2"), FVector2D(-35.f, 45.f));
+	WeaponSlot6Attach3 = CreateWeaponAttachPoint(WeaponSlot6, TEXT("WeaponSlot6Attach3"), FVector2D(-60.f, 0.f));
+	WeaponSlot6Attach4 = CreateWeaponAttachPoint(WeaponSlot6, TEXT("WeaponSlot6Attach4"), FVector2D(60.f, 0.f));
+	WeaponSlot6Attach5 = CreateWeaponAttachPoint(WeaponSlot6, TEXT("WeaponSlot6Attach5"), FVector2D(-35.f, -45.f));
+	WeaponSlot6Attach6 = CreateWeaponAttachPoint(WeaponSlot6, TEXT("WeaponSlot6Attach6"), FVector2D(35.f, -45.f));
+
+	// ---- 判定范围（Godot Hurtbox / ItemPickupArea / ItemAttractArea） ----
+
+	// 同样挂在 SpriteRoot 下：判定范围的偏移量是 Godot 的屏幕平面偏移，必须落在 2D 平面内。
+	// 换算基准：BP 里 PaperDollBody 相对 SpriteRoot 为 0，即 SpriteRoot 原点 = 精灵中心；
+	// 而 Godot 玩家根节点在精灵中心下方 24（Animation 节点 y = -24），故 局部Z = -(GodotY + 24)。
+
+	Hurtbox = CreateDefaultSubobject<USphereComponent>(TEXT("Hurtbox"));
+	Hurtbox->SetupAttachment(SpriteRoot);
+	// Godot Hurtbox(0,-25) + Collision(0,13) = 玩家根 (0,-12) -> 精灵中心上方 12
+	Hurtbox->SetRelativeLocation(FVector(0.f, 0.f, -12.f));
+	ConfigureOverlapArea(Hurtbox, 21.f);
+
+	ItemPickupArea = CreateDefaultSubobject<USphereComponent>(TEXT("ItemPickupArea"));
+	ItemPickupArea->SetupAttachment(SpriteRoot);
+	// Godot (0,-24) 正好是精灵中心
+	ItemPickupArea->SetRelativeLocation(FVector::ZeroVector);
+	ConfigureOverlapArea(ItemPickupArea, 32.f);
+
+	ItemAttractArea = CreateDefaultSubobject<USphereComponent>(TEXT("ItemAttractArea"));
+	ItemAttractArea->SetupAttachment(SpriteRoot);
+	// Godot (0,0) 即玩家根节点 -> 精灵中心下方 24
+	ItemAttractArea->SetRelativeLocation(FVector(0.f, 0.f, -24.f));
+	ConfigureOverlapArea(ItemAttractArea, 150.f);
+
+	Hurtbox->OnComponentBeginOverlap.AddDynamic(this, &ABRT_PlayerCharacter::OnHurtboxBeginOverlap);
+	ItemPickupArea->OnComponentBeginOverlap.AddDynamic(this, &ABRT_PlayerCharacter::OnItemPickupAreaBeginOverlap);
+	ItemAttractArea->OnComponentBeginOverlap.AddDynamic(this, &ABRT_PlayerCharacter::OnItemAttractAreaBeginOverlap);
+}
+
+USceneComponent* ABRT_PlayerCharacter::CreateWeaponAttachPoint(USceneComponent* Parent, const TCHAR* Name, const FVector2D& GodotOffset)
+{
+	// 注意：只能在构造函数期间调用（CreateDefaultSubobject 限制）
+	USceneComponent* AttachPoint = CreateDefaultSubobject<USceneComponent>(Name);
+	AttachPoint->SetupAttachment(Parent);
+	// Godot 的 +Y 向下，对应 UE 的 -Z
+	AttachPoint->SetRelativeLocation(FVector(GodotOffset.X, 0.f, -GodotOffset.Y));
+	return AttachPoint;
 }
 
 
@@ -60,7 +189,13 @@ ABRT_PlayerCharacter::ABRT_PlayerCharacter()
 void ABRT_PlayerCharacter::BeginPlay()
 {
 	Super::BeginPlay();
-	
+
+	// 影子默认复用身体精灵（Godot 里 Shadow 直接用 potato.png），蓝图未指定时自动补齐
+	if (ShadowSprite && !ShadowSprite->GetSprite() && PaperDollBody)
+	{
+		ShadowSprite->SetSprite(PaperDollBody->GetSprite());
+	}
+
 	if (PaperDollAnim)
 	{
 		PaperDollAnim->PlayAnimByName(FName(TEXT("idle")));
@@ -102,4 +237,19 @@ void ABRT_PlayerCharacter::Tick(float DeltaTime)
 void ABRT_PlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
+}
+
+void ABRT_PlayerCharacter::OnHurtboxBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
+{
+	// TODO: 受击判定（伤害来源过滤、免伤次数、无敌帧），对应 Godot Hurtbox 的 area/body_entered
+}
+
+void ABRT_PlayerCharacter::OnItemPickupAreaBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
+{
+	// TODO: 拾取（靠近即拾取的消耗品/材料），对应 Godot ItemPickupArea.area_entered
+}
+
+void ABRT_PlayerCharacter::OnItemAttractAreaBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
+{
+	// TODO: 吸引（把范围内的掉落物拉向玩家），对应 Godot ItemAttractArea.area_entered
 }
