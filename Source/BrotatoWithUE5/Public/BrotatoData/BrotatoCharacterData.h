@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "BrotatoItemData.h"
+#include "BrotatoCore/Type/BRT_CharacterTypes.h"
 #include "BrotatoCharacterData.generated.h"
 
 struct FGameplayTag;
@@ -17,4 +18,6 @@ class BROTATOWITHUE5_API UBrotatoCharacterData : public UBrotatoItemData
 
 	UPROPERTY(EditDefaultsOnly) TArray<FGameplayTag> WantedTags;
 	// UPROPERTY(EditDefaultsOnly) TArray<TSoftObjectPtr<UBrotatoWeaponData>> StartingWeapons;
+	
+	UPROPERTY(EditDefaultsOnly) TArray<FItemAppearance> ItemAppearances;
 };
