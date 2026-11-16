@@ -11,7 +11,7 @@ struct FGameplayTag;
 /**
  * 
  */
-UCLASS()
+UCLASS(BlueprintType)
 class BROTATOWITHUE5_API UBrotatoCharacterData : public UBrotatoItemData
 {
 	GENERATED_BODY()
@@ -20,4 +20,8 @@ class BROTATOWITHUE5_API UBrotatoCharacterData : public UBrotatoItemData
 	// UPROPERTY(EditDefaultsOnly) TArray<TSoftObjectPtr<UBrotatoWeaponData>> StartingWeapons;
 	
 	UPROPERTY(EditDefaultsOnly) TArray<FItemAppearance> ItemAppearances;
+
+public:
+	/** 角色自带的外观列表（眼睛/嘴巴等），按 Depth 升序即叠加顺序 */
+	const TArray<FItemAppearance>& GetItemAppearances() const { return ItemAppearances; }
 };

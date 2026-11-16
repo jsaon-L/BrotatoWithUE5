@@ -5,6 +5,7 @@
 
 #include "Animation/BRT_PaperDollAnimComponent.h"
 #include "Animation/BRT_PaperDollAnimData.h"
+#include "BrotatoData/BrotatoCharacterData.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SphereComponent.h"
@@ -24,6 +25,21 @@ namespace
 		Area->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Overlap);
 		Area->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 		Area->SetGenerateOverlapEvents(true);
+	}
+
+	/**
+	 * Godot 的 FItemAppearance::Depth（典型 -1000~1200）换算成 UE 的半透明排序值。
+	 * 现有纸娃娃层级固定为：影子 -2、高亮 -1、腿 0、身体 1。
+	 * 负深度要压到影子之下（对应 Godot 里 depth < -1 的外观被 move_child(0) 提到最底层，如披风），
+	 * 非负深度从 2 起（保证盖住身体），量级按 /100 缩放以保留相对顺序。
+	 */
+	int32 DepthToSortPriority(int32 Depth)
+	{
+		if (Depth < 0)
+		{
+			return FMath::Clamp(FMath::RoundToInt(Depth / 100.f), -100, -3);
+		}
+		return FMath::Max(2, FMath::RoundToInt(Depth / 100.f));
 	}
 }
 
@@ -201,6 +217,78 @@ void ABRT_PlayerCharacter::BeginPlay()
 		PaperDollAnim->PlayAnimByName(FName(TEXT("idle")));
 	}
 
+	// 参考 Godot player.apply_items_effects：用角色数据把自带外观（眼睛/嘴巴等）组装到身上
+	InitFromCharacterData();
+}
+
+
+void ABRT_PlayerCharacter::InitFromCharacterData()
+{
+	ClearItemAppearances();
+
+	if (!CharacterData)
+	{
+		return;
+	}
+
+	// 与 Godot RunData.sort_appearances 一致：按 Depth 升序即由底层到上层依次叠加
+	TArray<FItemAppearance> SortedAppearances = CharacterData->GetItemAppearances();
+	SortedAppearances.StableSort([](const FItemAppearance& A, const FItemAppearance& B)
+	{
+		return A.Depth < B.Depth;
+	});
+
+	for (const FItemAppearance& Appearance : SortedAppearances)
+	{
+		AddItemAppearance(Appearance);
+	}
+}
+
+
+UPaperSpriteComponent* ABRT_PlayerCharacter::AddItemAppearance(const FItemAppearance& Appearance)
+{
+	if (!Appearance.Sprite || !SpriteRoot)
+	{
+		return nullptr;
+	}
+	
+	//TODO:根据位置和优先级做过滤与替换,other例外全量显示
+
+	// 外观精灵统一挂在 SpriteRoot 下：SpriteRoot 承载 2D 平面朝向，局部 XZ 即屏幕平面。
+	// 位置恒为原点（Godot 侧 item_sprite.position 也是 (0,0)，位置由图片自身内容决定），
+	// 叠放层级由 FItemAppearance::Depth 换算成 TranslucentSortPriority。
+	UPaperSpriteComponent* SpriteComponent = NewObject<UPaperSpriteComponent>(this, NAME_None, RF_Transient);
+	if (!SpriteComponent)
+	{
+		return nullptr;
+	}
+
+	SpriteComponent->SetupAttachment(PaperDollBody);
+	SpriteComponent->SetMobility(EComponentMobility::Movable);
+	SpriteComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	SpriteComponent->SetGenerateOverlapEvents(false);
+	SpriteComponent->SetCastShadow(false);
+	SpriteComponent->SetSprite(Appearance.Sprite);
+	SpriteComponent->SetRelativeLocationAndRotation(FVector::ZeroVector, FRotator::ZeroRotator);
+	SpriteComponent->SetTranslucentSortPriority(DepthToSortPriority(Appearance.Depth));
+	SpriteComponent->RegisterComponent();
+
+	ItemAppearanceComponents.Add(SpriteComponent);
+	return SpriteComponent;
+}
+
+
+void ABRT_PlayerCharacter::ClearItemAppearances()
+{
+	for (UPaperSpriteComponent* SpriteComponent : ItemAppearanceComponents)
+	{
+		if (IsValid(SpriteComponent))
+		{
+			SpriteComponent->DestroyComponent();
+		}
+	}
+
+	ItemAppearanceComponents.Reset();
 }
 
 // Called every frame

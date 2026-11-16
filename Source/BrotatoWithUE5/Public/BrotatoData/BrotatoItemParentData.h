@@ -12,7 +12,7 @@ class UPaperFlipbook;
  * 
  */
 UCLASS()
-class BROTATOWITHUE5_API UBrotatoItemParentData : public UPrimaryDataAsset
+class BROTATOWITHUE5_API UBrotatoItemParentData : public UDataAsset
 {
 	GENERATED_BODY()
 	UPROPERTY(EditDefaultsOnly) FName MyId;

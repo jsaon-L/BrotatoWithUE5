@@ -3,11 +3,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "BrotatoCore/Type/BRT_CharacterTypes.h"
 #include "Character/BRT_BaseCharacter.h"
 #include "BRT_PlayerCharacter.generated.h"
 
 class UBRT_PaperDollAnimAsset;
 class UBRT_PaperDollAnimComponent;
+class UBrotatoCharacterData;
 class UPaperSprite;
 class UPaperSpriteComponent;
 class USceneComponent;
@@ -33,6 +35,33 @@ public:
 
 	// Called to bind functionality to input
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
+
+
+	// ---- 角色数据 & 外观组装（对应 Godot RunData.appearances_displayed + player.apply_items_effects） ----
+
+	/** 角色数据：在蓝图里选择，BeginPlay 时用它初始化角色外观 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BRT|Data")
+	TObjectPtr<UBrotatoCharacterData> CharacterData;
+
+	/**
+	 * 用 CharacterData 初始化角色外观：清空旧外观后，按 Depth 升序逐个生成外观精灵。
+	 * 可重复调用（例如读档、换角色），每次都会重建。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "BRT|Data")
+	void InitFromCharacterData();
+
+	/**
+	 * 动态添加一个外观精灵：为 FItemAppearance 新建 UPaperSpriteComponent 并挂到 SpriteRoot 下。
+	 * 外观坐标即角色中心（Godot 侧 position 恒为 0，具体位置由图片内容决定），
+	 * Depth 换算为 TranslucentSortPriority 决定叠放层级。
+	 * @return 创建的组件；Sprite 为空或 SpriteRoot 无效时返回 nullptr
+	 */
+	UFUNCTION(BlueprintCallable, Category = "BRT|Data")
+	UPaperSpriteComponent* AddItemAppearance(const FItemAppearance& Appearance);
+
+	/** 销毁所有由 AddItemAppearance 动态生成的外观精灵 */
+	UFUNCTION(BlueprintCallable, Category = "BRT|Data")
+	void ClearItemAppearances();
 
 protected:
 	// ---- 纸娃娃层级（对齐 Godot player.tscn：Animation 根 + Legs/LegL + Legs/LegR） ----
@@ -239,6 +268,10 @@ protected:
 
 
 private:
+
+	/** 运行时动态生成的外观精灵组件，用于重建时清理 */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UPaperSpriteComponent>> ItemAppearanceComponents;
 
 	/** 当前是否处于 move 动画（滞回状态） */
 	bool bMoveAnimActive = false;
