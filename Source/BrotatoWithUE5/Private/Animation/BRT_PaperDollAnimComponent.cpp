@@ -17,7 +17,25 @@ void UBRT_PaperDollAnimComponent::BeginPlay()
 	// 自动注册细节面板中配置的目标
 	for (const FBRT_PaperDollTargetBinding& Binding : ConfiguredTargets)
 	{
-		RegisterTarget(Binding.TargetName, Binding.Component);
+		// FComponentReference 存的是组件名/路径而非对象指针，需要在本 Actor 上解析
+		USceneComponent* TargetComponent = Cast<USceneComponent>(Binding.Component.GetComponent(GetOwner()));
+		if (TargetComponent == nullptr)
+		{
+			UE_LOG(LogBRTAnim, Warning, TEXT("BeginPlay: 目标 %s 的组件引用无法解析（ComponentProperty=%s, PathToComponent=%s）"),
+				*Binding.TargetName.ToString(),
+				*Binding.Component.ComponentProperty.ToString(),
+				*Binding.Component.PathToComponent);
+			continue;
+		}
+
+		if (TargetComponent->GetOwner() != GetOwner())
+		{
+			UE_LOG(LogBRTAnim, Warning, TEXT("BeginPlay: 目标 %s 引用的组件 %s 不属于同一 Actor，已忽略"),
+				*Binding.TargetName.ToString(), *TargetComponent->GetName());
+			continue;
+		}
+
+		RegisterTarget(Binding.TargetName, TargetComponent);
 	}
 }
 

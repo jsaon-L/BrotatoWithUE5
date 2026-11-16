@@ -35,6 +35,9 @@ public:
 protected:
 	// ---- 纸娃娃层级（对齐 Godot player.tscn：Animation 根 + Legs/LegL + Legs/LegR） ----
 
+	UPROPERTY(VisibleAnywhere, Category = "BRT|Anim")
+	TObjectPtr<USceneComponent> SpriteRoot;
+	
 	/** 身体精灵（动画 Root 目标），腿部关节挂其下并跟随根缩放 */
 	UPROPERTY(VisibleAnywhere, Category = "BRT|Anim")
 	TObjectPtr<UPaperSpriteComponent> PaperDollBody;
@@ -53,17 +56,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, Category = "BRT|Anim")
 	TObjectPtr<UPaperSpriteComponent> LegRSprite;
 
-	UPROPERTY(VisibleAnywhere, Category = "BRT|Anim")
-	TObjectPtr<UBRT_PaperDollAnimComponent> PaperDollAnim;
 
 	// ---- 动画与精灵资产（为空时按默认路径加载） ----
-
-	UPROPERTY(EditDefaultsOnly, Category = "BRT|Anim")
-	TObjectPtr<UBRT_PaperDollAnimAsset> IdleAnim;
-
-	UPROPERTY(EditDefaultsOnly, Category = "BRT|Anim")
-	TObjectPtr<UBRT_PaperDollAnimAsset> MoveAnim;
-
+	
 	/** 移动切换阈值（UE 单位/秒，PPU=1 时即像素/秒） */
 	UPROPERTY(EditDefaultsOnly, Category = "BRT|Anim")
 	float MoveSpeedThreshold = 10.f;
@@ -76,18 +71,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "BRT|Anim")
 	float MinAnimDwellSeconds = 0.25f;
 
-	UPROPERTY(EditDefaultsOnly, Category = "BRT|Anim")
-	TObjectPtr<UPaperSprite> BodySpriteAsset;
 
-	UPROPERTY(EditDefaultsOnly, Category = "BRT|Anim")
-	TObjectPtr<UPaperSprite> LegLSpriteAsset;
-
-	UPROPERTY(EditDefaultsOnly, Category = "BRT|Anim")
-	TObjectPtr<UPaperSprite> LegRSpriteAsset;
 
 private:
-	/** 属性为空时按 Content 默认路径加载资产并套用到精灵组件 */
-	void ResolvePaperDollAssets();
 
 	/** 当前是否处于 move 动画（滞回状态） */
 	bool bMoveAnimActive = false;

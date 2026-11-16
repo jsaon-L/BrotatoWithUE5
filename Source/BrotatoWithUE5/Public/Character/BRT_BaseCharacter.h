@@ -9,6 +9,7 @@
 #include "BRT_BaseCharacter.generated.h"
 
 
+class UBRT_PaperDollAnimComponent;
 struct FOnAttributeChangeData;
 class UAttributeSet;
 //TODO:目前玩家和敌人都从此类扩展,可是敌人其实不需要这么重的Character,可以从Actor或者其他渲染方式驱动,后续优化
@@ -31,6 +32,11 @@ public:
 
 	virtual void HandleDeath();
 	virtual void HandleRespawn();
+	
+	//brotato动画
+	UPROPERTY(VisibleAnywhere, Category = "BRT|Anim")
+	TObjectPtr<UBRT_PaperDollAnimComponent> PaperDollAnim;
+
 
 private:
 

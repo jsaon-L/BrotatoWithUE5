@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Engine/EngineTypes.h"
 #include "BRT_PaperDollAnimComponent.generated.h"
 
 class UBRT_PaperDollAnimAsset;
@@ -22,9 +23,13 @@ struct FBRT_PaperDollTargetBinding
 	UPROPERTY(EditAnywhere, Category = "Binding")
 	FName TargetName;
 
-	/** 要驱动的组件：本 Actor 上的任意 SceneComponent（含子组件） */
-	UPROPERTY(EditAnywhere, Category = "Binding", meta = (UseComponentPicker))
-	TObjectPtr<USceneComponent> Component = nullptr;
+	/**
+	 * 要驱动的组件。用 FComponentReference + UseComponentPicker：
+	 * 细节面板的下拉框只列出「本 Actor 自己」的组件（不含 AllowAnyActor 就不能跨 Actor 选择），
+	 * AllowedClasses 再把非 SceneComponent 的组件（如移动/音频组件）过滤掉。
+	 */
+	UPROPERTY(EditAnywhere, Category = "Binding", meta = (UseComponentPicker, AllowedClasses = "/Script/Engine.SceneComponent"))
+	FComponentReference Component;
 };
 
 /**

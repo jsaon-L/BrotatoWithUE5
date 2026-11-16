@@ -22,10 +22,14 @@ ABRT_PlayerCharacter::ABRT_PlayerCharacter()
 	bUseControllerRotationRoll = false;
 	bUseControllerRotationYaw = false;
 
+	//用来显示的组件的根
+	SpriteRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SpriteRoot"));
+	SpriteRoot->SetupAttachment(GetCapsuleComponent());
+	
 	// 纸娃娃层级：身体精灵（Root）→ 腿部关节（LegL/LegR）→ 腿部精灵。
 	// 位置按 Godot player.tscn 换算：Godot(x,y) -> UE(x,0,-y)，PPU=1（与腿部精灵 PixelsPerUnrealUnit 一致）。
 	PaperDollBody = CreateDefaultSubobject<UPaperSpriteComponent>(TEXT("PaperDollBody"));
-	PaperDollBody->SetupAttachment(GetCapsuleComponent());
+	PaperDollBody->SetupAttachment(SpriteRoot);
 	PaperDollBody->SetRelativeLocation(FVector(0.f, 0.f, 24.f)); // Godot Animation 基准位 (0,-24)
 	PaperDollBody->SetTranslucentSortPriority(1); // 身体渲染在腿之前（Godot show_behind_parent）
 
@@ -49,64 +53,19 @@ ABRT_PlayerCharacter::ABRT_PlayerCharacter()
 	LegRSprite->SetRelativeLocation(FVector(-2.f, 0.f, -7.5f));
 	LegRSprite->SetTranslucentSortPriority(0);
 
-	PaperDollAnim = CreateDefaultSubobject<UBRT_PaperDollAnimComponent>(TEXT("PaperDollAnim"));
 }
 
-void ABRT_PlayerCharacter::ResolvePaperDollAssets()
-{
-	if (!BodySpriteAsset)
-	{
-		BodySpriteAsset = LoadObject<UPaperSprite>(nullptr, TEXT("/Game/BrotatoProject/entities/units/player/potato_Sprite.potato_Sprite"));
-	}
-	if (!LegLSpriteAsset)
-	{
-		LegLSpriteAsset = LoadObject<UPaperSprite>(nullptr, TEXT("/Game/BrotatoProject/entities/units/player/legs_Sprite_1.legs_Sprite_1"));
-	}
-	if (!LegRSpriteAsset)
-	{
-		LegRSpriteAsset = LoadObject<UPaperSprite>(nullptr, TEXT("/Game/BrotatoProject/entities/units/player/legs_Sprite_0.legs_Sprite_0"));
-	}
-	if (!IdleAnim)
-	{
-		IdleAnim = LoadObject<UBRT_PaperDollAnimAsset>(nullptr, TEXT("/Game/BrotatoProject/entities/units/player/Animations/PA_PlayerIdle.PA_PlayerIdle"));
-	}
-	if (!MoveAnim)
-	{
-		MoveAnim = LoadObject<UBRT_PaperDollAnimAsset>(nullptr, TEXT("/Game/BrotatoProject/entities/units/player/Animations/PA_PlayerMove.PA_PlayerMove"));
-	}
-
-	if (PaperDollBody && BodySpriteAsset)
-	{
-		PaperDollBody->SetSprite(BodySpriteAsset);
-	}
-	if (LegLSprite && LegLSpriteAsset)
-	{
-		LegLSprite->SetSprite(LegLSpriteAsset);
-	}
-	if (LegRSprite && LegRSpriteAsset)
-	{
-		LegRSprite->SetSprite(LegRSpriteAsset);
-	}
-}
 
 // Called when the game starts or when spawned
 void ABRT_PlayerCharacter::BeginPlay()
 {
 	Super::BeginPlay();
-
-	ResolvePaperDollAssets();
-
+	
 	if (PaperDollAnim)
 	{
-		PaperDollAnim->RegisterTarget(TEXT("Root"), PaperDollBody);
-		PaperDollAnim->RegisterTarget(TEXT("LegL"), LegLJoint);
-		PaperDollAnim->RegisterTarget(TEXT("LegR"), LegRJoint);
-
-		if (IdleAnim)
-		{
-			PaperDollAnim->PlayAnim(IdleAnim);
-		}
+		PaperDollAnim->PlayAnimByName(FName(TEXT("idle")));
 	}
+
 }
 
 // Called every frame
@@ -117,7 +76,7 @@ void ABRT_PlayerCharacter::Tick(float DeltaTime)
 	// 速度阈值切换 idle/move（切换即播，无融合）。
 	// 带滞回 + 最小驻留时间，避免速度在阈值附近抖动导致动画频繁重播（对应 Godot MovingTimer/NotMovingTimer）。
 	// 判定顺序：驻留期只递减计时，驻留结束后按滞回阈值切换。
-	if (PaperDollAnim && IdleAnim && MoveAnim)
+	if (PaperDollAnim)
 	{
 		if (AnimDwellCountdown > 0.f)
 		{
@@ -132,7 +91,7 @@ void ABRT_PlayerCharacter::Tick(float DeltaTime)
 			if (bShouldMove != bMoveAnimActive)
 			{
 				bMoveAnimActive = bShouldMove;
-				PaperDollAnim->PlayAnim(bShouldMove ? MoveAnim : IdleAnim);
+				PaperDollAnim->PlayAnimByName(bShouldMove ? FName(TEXT("move")) : FName(TEXT("idle")));
 				AnimDwellCountdown = MinAnimDwellSeconds;
 			}
 		}

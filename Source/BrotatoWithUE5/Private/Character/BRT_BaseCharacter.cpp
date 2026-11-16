@@ -3,6 +3,7 @@
 
 #include "Character/BRT_BaseCharacter.h"
 
+#include "Animation/BRT_PaperDollAnimComponent.h"
 #include "BrotatoGAS/BRT_AbilitySystemComponent.h"
 #include "BrotatoGAS/AttributeSet/BRT_AttributeSet.h"
 
@@ -22,6 +23,9 @@ ABRT_BaseCharacter::ABRT_BaseCharacter()
 	AbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
 
 	AttributeSet = CreateDefaultSubobject<UBRT_AttributeSet>("AttributeSet");
+	
+	PaperDollAnim = CreateDefaultSubobject<UBRT_PaperDollAnimComponent>(TEXT("PaperDollAnim"));
+
 }
 
 void ABRT_BaseCharacter::HandleDeath()
