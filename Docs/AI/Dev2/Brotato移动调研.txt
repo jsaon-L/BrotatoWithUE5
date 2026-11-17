@@ -1,0 +1,190 @@
+这是 Godot 项目（Brotato 逆向工程）。让我查看敌人相关代码。
+我已完成调研。这是一个 **Godot 3.x 逆向导出的 Brotato 工程**（`.init()` 显式父类调用、旧版 `export`/`onready` 语法）。敌人的“追击”并不使用寻路或感知系统，而是由一套 `MovementBehavior` 策略在每物理帧计算一个**方向向量**，再由 `Unit` 把它转换为速度，最后通过 `RigidBody2D._integrate_forces` 实现移动。
+
+## 1. 核心链路（一帧内发生了什么）
+
+```
+EntitySpawner.spawn_entity()  ──►  entity.init(min, max, _player, self)   // 注入 player_ref
+        │
+        ▼
+Unit._physics_process(delta)
+  _current_movement = _movement_behavior.get_movement()   // 只算"方向"，未归一化
+  _integrate_forces_velocity = get_move_input() - knockback
+        │
+        ▼
+RigidBody2D 物理步进 ──► Unit._integrate_forces(state)     // 写入 linear_velocity（含到点吸附）
+        │
+        ▼
+Enemy._physics_process(delta)   // 攻击CD、被击退时关闭 Hitbox、驱动 AttackBehavior
+```
+
+关键点：玩家引用是**刷怪时统一注入**的，所有敌人天然知道玩家在哪：
+
+```277:277:entities/units/../../global/entity_spawner.gd
+	entity.init(_zone_min_pos, _zone_max_pos, _player, self)
+```
+
+## 2. 默认追击策略：`FollowPlayerMovementBehavior`
+
+`enemy.tscn` 的 `MovementBehavior` 节点默认挂的就是它，因此**绝大多数小怪都是无脑直线追人（纯 Seek，没有 A*、没有导航网格、没有分离避让）**：
+
+```13:18:entities/units/movement_behaviors/follow_player_movement_behavior.gd
+func get_movement()->Vector2:
+	return get_target_position() - _parent.global_position
+
+func get_target_position():
+	return player_ref.global_position
+```
+
+```47:48:entities/units/enemies/enemy.tscn
+[node name="MovementBehavior" type="Node2D" parent="." index="6"]
+script = ExtResource( 6 )
+```
+
+返回的是“未归一化方向”，真正的速度在 `Unit` 里施加：
+
+```162:173:entities/units/unit/unit.gd
+func get_movement()->Vector2:
+	return _current_movement_behavior.get_movement() if not _move_locked else _current_movement
+
+func get_move_input()->Vector2:
+	return _current_movement.normalized() * max(0.0, (current_stats.speed + bonus_speed + decaying_bonus_speed + _speed_rand_value))
+
+func get_next_velocity()->Vector2:
+	var move_input: = get_move_input()
+	var velocity: = move_input - get_next_knockback_value()
+	return velocity
+```
+
+所以“追击速度”= `current_stats.speed + bonus_speed + decaying_bonus_speed + 个体随机值`，方向永远是**玩家当前实时位置**（贴身时会因为目标点重合而互相顶住）。
+
+## 3. 防抖动/贴身处理：`_integrate_forces` 的“到点吸附”
+
+因为目标是“玩家精确坐标”，若只给速度，敌人会绕着玩家来回抖。`Unit` 的做法是：如果这一帧的位移会**越过**目标点，就直接把位置吸附到目标点、速度清零。
+
+```124:159:entities/units/unit/unit.gd
+func _integrate_forces(state:Physics2DDirectBodyState)->void :
+	...
+	var target_position = _current_movement_behavior.get_target_position()
+	...
+	var origin_to_next_origin = _integrate_forces_velocity * state.step
+	var origin_to_target = target_position - origin
+
+	if origin_to_target.length_squared() > origin_to_next_origin.length_squared():
+		state.linear_velocity = _integrate_forces_velocity
+		return 
+
+	var projected_target = origin + origin_to_target.project(origin_to_next_origin)
+	var next_origin = origin + origin_to_next_origin
+	if (next_origin - projected_target).dot(origin - projected_target) <= 0:
+		state.linear_velocity = Vector2.ZERO
+		state.transform.origin = target_position
+		return 
+	state.linear_velocity = _integrate_forces_velocity
+```
+
+这也是各策略里的 `get_target_position()` 必须实现的原因（Boss 状态、`stay_in_range` 等都返回自己的目标点）。
+
+物理配置：`RigidBody2D`，`mode = 2 (MODE_CHARACTER)`、`friction = 0`；敌人 `collision_layer = 4, collision_mask = 132`（与**其他敌人**和**墙**碰撞），玩家 `mask = 128`（只撞墙）——即 **敌人与玩家没有物理碰撞，追到身上靠 Hitbox/Hurtbox 区域判定造成接触伤害**。
+
+```232:235:entities/entity.tscn
+[node name="Entity" type="RigidBody2D"]
+mode = 2
+physics_material_override = SubResource( 6 )
+script = ExtResource( 3 )
+```
+
+## 4. 其他 5 种 MovementBehavior（按敌人类型选用）
+
+| 策略 | 行为 | 使用者示例 |
+|---|---|---|
+| `FollowPlayerMovementBehavior` | 直线贴脸追击 | 001 及所有未覆写的敌人、Boss 默认 |
+| `StayInRangeFromPlayerMovementBehavior` | **保持距离**：目标点 = 玩家 → 自身方向延长 `target_range`（±随机），进入 10px 死区停下。近战走位/远程怪卡距离 | 003(300)、023(400)、009(400)、007(500)、033(500)、034 二阶段(225) |
+| `FollowRandPosAroundPlayerMovementBehavior` | 初始化时随机一个“玩家周围的固定偏移点”，始终追这个点 → 表现为跟在玩家身后/斜后方、绕圈感 | 016、024、025 |
+| `TargetRandPosAroundPlayerMovementBehavior` | 到达后在玩家周围 `range_around_player` 内**重新抽一个点**（夹到地图边界内）→ 断续扑击 | 010、021 |
+| `TargetRandPosMovementBehavior` | 全地图随机游走，**不追人**（真正的“不追击”敌人） | 012、013、017、022、028、034 一阶段 |
+| `PatrolEdgesOfMapMovementBehavior` | 沿地图边缘巡逻，进入 `detection_range` 才切换成追击策略并 `emit_signal("detected_player")`（`PatrollingEnemy` 借此 +300 速度）。**本工程中没有任何场景引用它，属于未使用/被砍内容** | — |
+
+保持距离策略的核心：
+
+```23:33:entities/units/movement_behaviors/stay_in_range_from_player_movement_behavior.gd
+func get_movement()->Vector2:
+	var target_position = get_target_position()
+	if Utils.vectors_approx_equal(target_position, _parent.global_position, EQUALITY_PRECISION):
+		return Vector2.ZERO
+	else :
+		return target_position - _parent.global_position
+
+func get_target_position():
+	var dir = (_parent.global_position - player_ref.global_position).normalized()
+	return player_ref.global_position + _actual_target_range * dir
+```
+
+## 5. Boss：用状态机**热换** MovementBehavior
+
+Boss 不重写移动逻辑，而是在血量/时间阈值到达时，直接把 `_current_movement_behavior` / `_current_attack_behavior` 指针换掉（`states[]` 数组来自子节点 `States/StateN`）：
+
+```57:66:entities/units/enemies/boss/boss.gd
+func _on_CheckStateTimer_timeout()->void :
+	elapsed_time += 1
+	for i in _states.size():
+		if _current_state < i and (current_stats.health <= (max_stats.health * _states[i][0]) or elapsed_time >= _states[i][1]):
+			on_state_changed(i)
+			...
+			_current_movement_behavior = _states[i][2]
+			_current_attack_behavior = _states[i][3]
+```
+
+## 6. 攻击行为对移动的“临时接管”
+
+`ChargingAttackBehavior`（冲撞型，如 33/34 等 Boss 的冲刺）会锁住常规移动，用 `bonus_speed` 直接飙一个固定冲撞速度并沿锁定方向位移：
+
+```50:62:entities/units/enemies/attack_behaviors/charging_attack_behavior.gd
+func shoot()->void :
+	_parent._can_move = true
+	_parent._move_locked = true
+	_parent.bonus_speed = charge_speed * RunData.current_run_accessibility_settings.speed
+	_parent._current_movement = _charge_direction
+	_unlock_move_timer.start()
+	_current_cd = get_cd() + charge_duration * 60
+
+func on_unlock_move_timer_timeout()->void :
+	_parent._move_locked = false
+	_parent.bonus_speed = 0
+```
+
+`_move_locked = true` 时 `get_movement()` 直接返回缓存的 `_current_movement`（见 `unit.gd:162-163`），即“锁定方向直线冲”。
+
+## 7. 速度值的修正来源（调参面板）
+
+```79:92:entities/units/unit/unit.gd
+	var base_speed = (stats.speed + (stats.speed * (Utils.get_stat("enemy_speed") / 100.0))) * (1.0 + speed_coef)
+	...
+	current_stats.speed = round(new_speed * (1.0 + (min(1.75, RunData.get_endless_factor() / 13.33)))) as int
+```
+
+- `stats.speed`（如 001 = 250）+ 全局 `enemy_speed` 加成 + 无尽模式衰减系数
+- `stats.speed_randomization` → `_speed_rand_value`（每个个体出生时随机 ±，避免完全同步贴脸）
+- `bonus_speed`：永久加速（如 005 每段时间 +45，被打后清零）
+- `decaying_bonus_speed`：衰减加减速，`Enemy._on_hit_something` 里撞到东西 `-200`（撞人后自身减速）
+- 击退：`_knockback_vector`，每帧 `linear_interpolate` 向 0 衰减，并**从移动速度里减去**，且被击退时 `Hitbox` 会被禁用，避免被击飞途中还能造伤
+
+```42:54:entities/units/enemies/enemy.gd
+	_current_attack_cd = max(_current_attack_cd - Utils.physics_one(delta), 0)
+	var is_being_knocked_back = get_knockback_value().length() > get_move_input().length()
+
+	if not _hitbox.is_disabled() and is_being_knocked_back:
+		_hitbox.disable()
+	elif _hitbox.is_disabled() and not is_being_knocked_back:
+		_hitbox.enable()
+
+	_current_attack_behavior.physics_process(delta)
+```
+
+## 8. 移植/改造时需要注意的坑
+
+1. **没有寻路、没有避让**：追击是纯方向 Seek，只靠 `RigidBody2D` 的物理碰撞把怪群挤开，靠近玩家时全靠“到点吸附”防抖。若移植到 UE 想做得更好，可在 Seek 之上加 RVO/分离力。
+2. **感知范围缺失**：唯一带 `detection_range` 的巡逻策略未被任何场景使用，所以小怪从出生点就开始全图追人。
+3. **脚本继承链调用**：`Enemy._physics_process` 没有显式调用 `._physics_process(delta)`，这里依赖 Godot 3 对 `_physics_process` 的**多级（父类+子类都执行）**分发；移植到 Godot 4 / 其它引擎时必须显式调用父类，否则敌人不会移动（`_current_movement` 永远为空）。
+4. `Entity` 里的 `MODE_KINEMATIC` 分支（`test_motion` + 法线滑动）只对玩家生效（`player.tscn` 的 `mode = 3`），敌人走 `_integrate_forces`。
+5. 调试开关：`DebugService.nullify_enemy_speed` 会把速度设为 `-1000`（用于“冻结敌人”调试），见 `enemy.gd:32-34`。
