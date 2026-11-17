@@ -11,13 +11,13 @@ class UPaperFlipbook;
 /**
  * 
  */
-UCLASS()
+UCLASS(BlueprintType)
 class BROTATOWITHUE5_API UBrotatoItemParentData : public UDataAsset
 {
 	GENERATED_BODY()
-	UPROPERTY(EditDefaultsOnly) FName MyId;
+	// UPROPERTY(EditDefaultsOnly) FName MyId;
 	UPROPERTY(EditDefaultsOnly) bool  bUnlockedByDefault = false;
-	UPROPERTY(EditDefaultsOnly) TSoftObjectPtr<UPaperFlipbook> Icon;
+	UPROPERTY(EditDefaultsOnly) TSoftObjectPtr<UTexture2D> Icon;
 	UPROPERTY(EditDefaultsOnly) FName NameKey;                   // 本地化键
 	UPROPERTY(EditDefaultsOnly) EBrotatoTier Tier = EBrotatoTier::Common;
 	UPROPERTY(EditDefaultsOnly) int32 Value = 1;
