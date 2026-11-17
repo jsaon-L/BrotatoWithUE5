@@ -35,8 +35,8 @@ void UBRT_AbilitySystemComponent::HandleAutoActivatedAbility(const FGameplayAbil
 	// 避免重复激活
 	if (AbilitySpec.IsActive()) return;
 
-	// 根据 Tag 判断（请确认 Tag 配置位置：AbilityTags 还是 AssetTags）
-	if (AbilitySpec.Ability->AbilityTags.HasTagExact(BrotatoTags::BRTAbilities_ActivateOnGiven))
+	// 根据 Tag 判断（UE5.5+ 中 AbilityTags 已废弃，改用 GetAssetTags()）
+	if (AbilitySpec.Ability->GetAssetTags().HasTagExact(BrotatoTags::BRTAbilities_ActivateOnGiven))
 	{
 		TryActivateAbility(AbilitySpec.Handle);
 	}
