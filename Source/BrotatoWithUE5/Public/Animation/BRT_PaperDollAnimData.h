@@ -8,6 +8,8 @@
 
 BROTATOWITHUE5_API DECLARE_LOG_CATEGORY_EXTERN(LogBRTAnim, Log, All);
 
+struct FBRT_GodotAnimParseResult;
+
 /**
  * 纸娃娃动画标量通道。
  * Godot 2D 变换（position/scale Vector2 + rotation_degrees）拆解为 UE 变换分量，
@@ -74,7 +76,7 @@ struct FBRT_PaperDollTrack
 {
 	GENERATED_BODY()
 
-	/** 绑定目标名：Root / LegL / LegR（由解析器从 Godot 节点路径映射） */
+	/** 绑定目标名：由解析器从 Godot 节点路径映射（"."/"Animation" -> Root，其余取末段节点名，如 Sprite / LegL / Collision） */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BRT|Anim")
 	FName TargetName;
 
@@ -177,4 +179,16 @@ public:
 
 	/** 程序化导入（测试 / 批量工具）；成功时覆盖本资产并返回 true */
 	bool ImportFromTresFile(const FString& TresFilePath);
+
+	/**
+	 * 从 .tscn 场景中按动画名导入（场景可能内嵌多个 Animation，如 entity.tscn 的 idle/death）。
+	 * 按 WantedAnimName 在场景解析结果中查找匹配项；找到则覆盖本资产并返回 true。
+	 */
+	bool ImportFromScnFile(const FString& ScnFilePath, FName WantedAnimName);
+
+	/**
+	 * 直接用解析结果覆盖本资产。
+	 * 批量导入同一 .tscn 的多套动画时复用一次解析结果，避免重复读盘/解析。
+	 */
+	void ApplyParseResult(const FBRT_GodotAnimParseResult& Result);
 };

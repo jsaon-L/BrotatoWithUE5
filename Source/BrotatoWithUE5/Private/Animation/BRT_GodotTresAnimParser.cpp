@@ -324,21 +324,30 @@ namespace
 		bool bApplyOriginOffset = false;
 	};
 
+	/**
+	 * Godot 节点路径 -> 纸娃娃目标名。
+	 * 场景根（"."，即 AnimationPlayer 的 root_node）与实体容器节点（"Animation"）统一映射为 Root；
+	 * 其余路径取最后一段节点名，从而覆盖全工程的动画：
+	 *   "Animation/Sprite"        -> Sprite（death 动画的 scale 归零 + 360° 旋转）
+	 *   "Animation/Legs/LegL"     -> LegL
+	 *   "Hitbox/Collision"        -> Collision
+	 *   "../BackgroundMistBack"   -> BackgroundMistBack
+	 * UE 侧按 TargetName 绑定到 SceneComponent（见 UBRT_PaperDollAnimComponent），名称一致即可驱动。
+	 */
 	FName ResolveTargetName(const FString& NodePathStr)
 	{
-		if (NodePathStr == TEXT("Animation"))
+		FString Path = NodePathStr.TrimStartAndEnd();
+		if (Path.IsEmpty() || Path == TEXT(".") || Path == TEXT("Animation"))
 		{
 			return FName(TEXT("Root"));
 		}
-		if (NodePathStr == TEXT("Animation/Legs/LegL"))
+
+		int32 SlashIdx = INDEX_NONE;
+		if (Path.FindLastChar(TEXT('/'), SlashIdx))
 		{
-			return FName(TEXT("LegL"));
+			Path = Path.Mid(SlashIdx + 1);
 		}
-		if (NodePathStr == TEXT("Animation/Legs/LegR"))
-		{
-			return FName(TEXT("LegR"));
-		}
-		return NAME_None;
+		return Path.IsEmpty() ? NAME_None : FName(*Path);
 	}
 
 	bool MapPropertyToChannels(const FString& NodePathStr, const FString& Property,
@@ -392,6 +401,47 @@ namespace
 			return true;
 		}
 		if (Property == TEXT("rotation_degrees"))
+		{
+			OutChannels.Add({ Target, EBRT_AnimChannel::RotationPitch, Params.RotationSign, false });
+			return true;
+		}
+		// 以下为 UI（Control）矩形变换，与 Node2D 的 position/scale/rotation 语义同构，
+		// 同样按 Godot(x,y)->UE(x,0,-y) 映射；Control 值以像素为单位，不做 PPU 换算。
+		if (Property == TEXT("rect_position"))
+		{
+			FTargetChannel ChX{ Target, EBRT_AnimChannel::LocationX, 1.f, false };
+			FTargetChannel ChZ{ Target, EBRT_AnimChannel::LocationZ, -1.f, false };
+			OutChannels = { ChX, ChZ };
+			return true;
+		}
+		if (Property == TEXT("rect_position:x"))
+		{
+			OutChannels.Add({ Target, EBRT_AnimChannel::LocationX, 1.f, false });
+			return true;
+		}
+		if (Property == TEXT("rect_position:y"))
+		{
+			OutChannels.Add({ Target, EBRT_AnimChannel::LocationZ, -1.f, false });
+			return true;
+		}
+		if (Property == TEXT("rect_scale"))
+		{
+			FTargetChannel ChX{ Target, EBRT_AnimChannel::ScaleX, 1.f, false };
+			FTargetChannel ChZ{ Target, EBRT_AnimChannel::ScaleZ, 1.f, false };
+			OutChannels = { ChX, ChZ };
+			return true;
+		}
+		if (Property == TEXT("rect_scale:x"))
+		{
+			OutChannels.Add({ Target, EBRT_AnimChannel::ScaleX, 1.f, false });
+			return true;
+		}
+		if (Property == TEXT("rect_scale:y"))
+		{
+			OutChannels.Add({ Target, EBRT_AnimChannel::ScaleZ, 1.f, false });
+			return true;
+		}
+		if (Property == TEXT("rect_rotation"))
 		{
 			OutChannels.Add({ Target, EBRT_AnimChannel::RotationPitch, Params.RotationSign, false });
 			return true;
@@ -796,7 +846,7 @@ bool FBRT_GodotTresAnimParser::ParseTresText(const FString& TresText, const FBRT
 	}
 	if (UnknownPathCount > 0)
 	{
-		OutResult.Warnings.Add(FString::Printf(TEXT("跳过未知节点路径/属性轨道 %d 条"), UnknownPathCount));
+		OutResult.Warnings.Add(FString::Printf(TEXT("跳过非变换属性轨道 %d 条（如 texture/modulate/shape 等标量通道无法表达的数据）"), UnknownPathCount));
 	}
 	if (CubicTrackCount > 0)
 	{
@@ -816,7 +866,8 @@ bool FBRT_GodotTresAnimParser::ParseTresText(const FString& TresText, const FBRT
 		UE_LOG(LogBRTAnim, Warning, TEXT("ParseTres: %s"), *Warning);
 	}
 
-	OutResult.bSuccess = OutResult.Tracks.Num() > 0;
+	// 只有 method 轨道的动画（事件驱动）同样可用；批量导入时可保留空动画以镜像完整结构
+	OutResult.bSuccess = OutResult.Tracks.Num() > 0 || OutResult.Events.Num() > 0 || Params.bKeepEmptyAnimations;
 	if (!OutResult.bSuccess)
 	{
 		UE_LOG(LogBRTAnim, Warning, TEXT("ParseTres: 未解析出任何轨道"));
@@ -840,4 +891,171 @@ bool FBRT_GodotTresAnimParser::ParseTresFile(const FString& TresFilePath, const 
 		OutResult.AnimName = FName(*FPaths::GetBaseFilename(TresFilePath));
 	}
 	return bOk;
+}
+
+bool FBRT_GodotTresAnimParser::ParseScnText(const FString& ScnText, const FBRT_GodotAnimImportParams& Params, FBRT_GodotSceneAnimParseResult& OutResult)
+{
+	OutResult = FBRT_GodotSceneAnimParseResult();
+
+	TArray<FString> Lines;
+	ScnText.ParseIntoArrayLines(Lines);
+
+	// 1) 扫描 anims/xxx = SubResource( N )，建立 id -> 动画名 映射（部分块自身没有 resource_name，如 RESET）
+	TMap<int32, FName> IdToAnimName;
+	for (const FString& RawLine : Lines)
+	{
+		const FString Line = RawLine.TrimStartAndEnd();
+		if (!Line.StartsWith(TEXT("anims/")))
+		{
+			continue;
+		}
+		int32 EqIdx = INDEX_NONE;
+		if (!Line.FindChar(TEXT('='), EqIdx))
+		{
+			continue;
+		}
+		const FString AnimKey = Line.Left(EqIdx).TrimStartAndEnd();
+		const FString Value = Line.Mid(EqIdx + 1).TrimStartAndEnd();
+		const FString AnimTag = TEXT("anims/");
+		if (AnimKey.Len() <= AnimTag.Len())
+		{
+			continue;
+		}
+		const FString Name = AnimKey.Mid(AnimTag.Len());
+
+		const int32 OpenIdx = Value.Find(TEXT("SubResource("));
+		if (OpenIdx == INDEX_NONE)
+		{
+			continue;
+		}
+		const int32 NumStart = OpenIdx + FCString::Strlen(TEXT("SubResource("));
+		const int32 CloseIdx = Value.Find(TEXT(")"), ESearchCase::CaseSensitive, ESearchDir::FromStart, NumStart);
+		if (CloseIdx == INDEX_NONE)
+		{
+			continue;
+		}
+		const int32 Id = FCString::Atoi(*Value.Mid(NumStart, CloseIdx - NumStart));
+		IdToAnimName.Add(Id, FName(*Name));
+	}
+
+	// 2) 按 [sub_resource type="Animation" id=N] / 下一个 [xxx] 区段边界切块
+	struct FBlock
+	{
+		int32 Id = INDEX_NONE;
+		TArray<FString> BodyLines;
+	};
+	TArray<FBlock> Blocks;
+	int32 CurrentBlockIdx = INDEX_NONE;
+
+	for (const FString& RawLine : Lines)
+	{
+		const FString Line = RawLine.TrimStartAndEnd();
+		if (Line.StartsWith(TEXT("[sub_resource")) && Line.Contains(TEXT("type=\"Animation\"")))
+		{
+			const int32 IdTagIdx = Line.Find(TEXT("id="));
+			int32 Id = INDEX_NONE;
+			if (IdTagIdx != INDEX_NONE)
+			{
+				Id = FCString::Atoi(*Line.Mid(IdTagIdx + FCString::Strlen(TEXT("id="))));
+			}
+			FBlock NewBlock;
+			NewBlock.Id = Id;
+			CurrentBlockIdx = Blocks.Add(MoveTemp(NewBlock));
+			continue;
+		}
+		if (Line.StartsWith(TEXT("[")))
+		{
+			// 进入其它类型区段（[node] / [ext_resource] / 非 Animation 的 [sub_resource] 等），结束当前采集
+			CurrentBlockIdx = INDEX_NONE;
+			continue;
+		}
+		if (CurrentBlockIdx != INDEX_NONE)
+		{
+			Blocks[CurrentBlockIdx].BodyLines.Add(RawLine);
+		}
+	}
+
+	if (Blocks.Num() == 0)
+	{
+		OutResult.Warnings.Add(TEXT("未找到任何 [sub_resource type=\"Animation\"] 块"));
+		UE_LOG(LogBRTAnim, Warning, TEXT("ParseScnText: %s"), *OutResult.Warnings.Last());
+		return false;
+	}
+
+	// 3) 每块复用单资源解析逻辑
+	int32 SkippedResetCount = 0;
+	for (const FBlock& Block : Blocks)
+	{
+		FString BlockText;
+		for (const FString& BodyLine : Block.BodyLines)
+		{
+			BlockText += BodyLine;
+			BlockText += LINE_TERMINATOR;
+		}
+
+		FBRT_GodotAnimParseResult SingleResult;
+		ParseTresText(BlockText, Params, SingleResult);
+
+		if (SingleResult.AnimName.IsNone())
+		{
+			if (const FName* MappedName = IdToAnimName.Find(Block.Id))
+			{
+				SingleResult.AnimName = *MappedName;
+			}
+			else
+			{
+				SingleResult.AnimName = FName(*FString::Printf(TEXT("Anim_%d"), Block.Id));
+			}
+		}
+
+		if (SingleResult.AnimName == FName(TEXT("RESET")))
+		{
+			++SkippedResetCount;
+			continue;
+		}
+
+		if (SingleResult.Tracks.Num() == 0 && SingleResult.Events.Num() == 0)
+		{
+			if (!Params.bKeepEmptyAnimations)
+			{
+				OutResult.Warnings.Add(FString::Printf(TEXT("动画 \"%s\"（id=%d）未解析出任何轨道/事件，已跳过"), *SingleResult.AnimName.ToString(), Block.Id));
+				continue;
+			}
+			// 保留空动画（如只有贴图帧动画的 fire）：仅同步 Length，保证目录/资产结构与 Godot 一致
+			OutResult.Warnings.Add(FString::Printf(TEXT("动画 \"%s\"（id=%d）无变换轨道/事件，仅导入 Length"), *SingleResult.AnimName.ToString(), Block.Id));
+		}
+
+		OutResult.Warnings.Append(SingleResult.Warnings);
+		SingleResult.bSuccess = true;
+		OutResult.Animations.Add(MoveTemp(SingleResult));
+	}
+
+	if (SkippedResetCount > 0)
+	{
+		OutResult.Warnings.Add(FString::Printf(TEXT("跳过 RESET 动画 %d 个（编辑器复位动画，运行时不播放）"), SkippedResetCount));
+	}
+
+	for (const FString& Warning : OutResult.Warnings)
+	{
+		UE_LOG(LogBRTAnim, Warning, TEXT("ParseScnText: %s"), *Warning);
+	}
+
+	OutResult.bSuccess = OutResult.Animations.Num() > 0;
+	if (!OutResult.bSuccess)
+	{
+		UE_LOG(LogBRTAnim, Warning, TEXT("ParseScnText: 未解析出任何可用动画"));
+	}
+	return OutResult.bSuccess;
+}
+
+bool FBRT_GodotTresAnimParser::ParseScnFile(const FString& ScnFilePath, const FBRT_GodotAnimImportParams& Params, FBRT_GodotSceneAnimParseResult& OutResult)
+{
+	FString Text;
+	if (!FFileHelper::LoadFileToString(Text, *ScnFilePath))
+	{
+		UE_LOG(LogBRTAnim, Error, TEXT("ParseScnFile: 无法读取文件 %s"), *ScnFilePath);
+		OutResult = FBRT_GodotSceneAnimParseResult();
+		return false;
+	}
+	return ParseScnText(Text, Params, OutResult);
 }

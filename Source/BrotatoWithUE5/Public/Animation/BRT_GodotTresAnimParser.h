@@ -16,6 +16,12 @@ struct FBRT_GodotAnimImportParams
 
 	/** 原点补偿（UE 空间），加在 Root 位移通道（胶囊体原点与 Godot 单位原点差异） */
 	FVector OriginOffset = FVector::ZeroVector;
+
+	/**
+	 * 是否保留"无变换轨道"的动画（如只含贴图帧动画 Sprite:texture 的 fire，或空动画）。
+	 * false：解析失败/跳过（原行为）；true：仍产出资产（只有 Length / 事件），批量导入用它保证结构完整。
+	 */
+	bool bKeepEmptyAnimations = false;
 };
 
 /** .tres 解析输出 */
@@ -33,16 +39,43 @@ struct FBRT_GodotAnimParseResult
 };
 
 /**
+ * .tscn 场景内多个 [sub_resource type="Animation" id=N] 的解析输出。
+ * 每个场景可能内嵌多套动画（如 entity.tscn 的 RESET/death/idle），按 AnimationPlayer 的
+ * anims/xxx = SubResource(N) 反查动画名；RESET（编辑器复位动画，运行时不播放）自动跳过。
+ */
+struct FBRT_GodotSceneAnimParseResult
+{
+	/** 已排除 RESET 的各动画解析结果 */
+	TArray<FBRT_GodotAnimParseResult> Animations;
+	TArray<FString> Warnings;
+	bool bSuccess = false;
+};
+
+/**
  * Godot 3.x Animation 文本（.tres / gd_resource format=2）解析器。
- * value / bezier 轨道 -> 标量通道轨道；裁剪 time > length 的越界 key；跳过 method 轨道；
+ * value / bezier 轨道 -> 标量通道轨道；裁剪 time > length 的越界 key；method 轨道 -> 动画事件；
  * 导入期完成 PPU / 轴向 / 旋转符号换算（映射约定：Godot(x,y) -> UE(x,0,-y)，Pitch = -rotation_degrees）。
+ *
+ * 节点路径映射（TargetName）："." 与 "Animation" -> Root，其余取路径最后一段节点名
+ * （"Animation/Sprite" -> Sprite、"Animation/Legs/LegL" -> LegL、"Hitbox/Collision" -> Collision）。
+ * 支持属性：position / scale / rotation_degrees 与 UI Control 的 rect_position / rect_scale / rect_rotation；
+ * texture / modulate / shape 等非变换属性无法用标量通道表达，导入时跳过并计入 Warnings。
  */
 class BROTATOWITHUE5_API FBRT_GodotTresAnimParser
 {
 public:
-	/** 解析 .tres 文本；失败原因记入 OutResult.Warnings 并打日志 */
+	/** 解析 .tres 文本（单个 [resource] 块）；失败原因记入 OutResult.Warnings 并打日志 */
 	static bool ParseTresText(const FString& TresText, const FBRT_GodotAnimImportParams& Params, FBRT_GodotAnimParseResult& OutResult);
 
-	/** 从文件读取并解析 */
+	/** 从文件读取并解析（单资源 .tres） */
 	static bool ParseTresFile(const FString& TresFilePath, const FBRT_GodotAnimImportParams& Params, FBRT_GodotAnimParseResult& OutResult);
+
+	/**
+	 * 解析 .tscn 场景文本中所有 [sub_resource type="Animation" id=N] 块（可多个），
+	 * 每块复用 ParseTresText 的单资源解析逻辑，并按 anims/xxx = SubResource(N) 反查动画名。
+	 */
+	static bool ParseScnText(const FString& ScnText, const FBRT_GodotAnimImportParams& Params, FBRT_GodotSceneAnimParseResult& OutResult);
+
+	/** 从文件读取并解析（.tscn 场景，含多个内嵌 Animation sub_resource） */
+	static bool ParseScnFile(const FString& ScnFilePath, const FBRT_GodotAnimImportParams& Params, FBRT_GodotSceneAnimParseResult& OutResult);
 };

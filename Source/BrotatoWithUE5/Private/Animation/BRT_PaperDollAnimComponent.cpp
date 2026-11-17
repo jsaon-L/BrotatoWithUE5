@@ -101,9 +101,10 @@ void UBRT_PaperDollAnimComponent::PlayAnim(UBRT_PaperDollAnimAsset* NewAnim)
 		RuntimeTracks.Add(Runtime);
 	}
 
-	UE_LOG(LogBRTAnim, Log, TEXT("PlayAnim: %s (Length=%.3f, Loop=%d, Tracks=%d)"),
-		*CurrentAnim->AnimName.ToString(), CurrentAnim->Length,
-		CurrentAnim->bLoop ? 1 : 0, RuntimeTracks.Num());
+	// 每次切动画都打日志，运行时刷屏并拖慢帧率，排查问题时再打开
+	// UE_LOG(LogBRTAnim, Log, TEXT("PlayAnim: %s (Length=%.3f, Loop=%d, Tracks=%d)"),
+	// 	*CurrentAnim->AnimName.ToString(), CurrentAnim->Length,
+	// 	CurrentAnim->bLoop ? 1 : 0, RuntimeTracks.Num());
 }
 
 bool UBRT_PaperDollAnimComponent::PlayAnimByName(FName AnimName)

@@ -213,10 +213,41 @@ bool UBRT_PaperDollAnimAsset::ImportFromTresFile(const FString& TresFilePath)
 		return false;
 	}
 
+	ApplyParseResult(Result);
+	return true;
+}
+
+void UBRT_PaperDollAnimAsset::ApplyParseResult(const FBRT_GodotAnimParseResult& Result)
+{
 	AnimName = Result.AnimName;
 	Length = Result.Length;
 	bLoop = Result.bLoop;
-	Tracks = MoveTemp(Result.Tracks);
-	Events = MoveTemp(Result.Events);
+	// 拷贝而非 MoveTemp：同一 .tscn 的多套动画复用同一份解析结果
+	Tracks = Result.Tracks;
+	Events = Result.Events;
+}
+
+bool UBRT_PaperDollAnimAsset::ImportFromScnFile(const FString& ScnFilePath, FName WantedAnimName)
+{
+	FBRT_GodotAnimImportParams Params;
+	Params.PixelsPerUnrealUnit = ImportPixelsPerUnrealUnit;
+	Params.RotationSign = ImportRotationSign;
+	Params.OriginOffset = ImportOriginOffset;
+
+	FBRT_GodotSceneAnimParseResult SceneResult;
+	if (!FBRT_GodotTresAnimParser::ParseScnFile(ScnFilePath, Params, SceneResult))
+	{
+		return false;
+	}
+
+	FBRT_GodotAnimParseResult* Found = SceneResult.Animations.FindByPredicate(
+		[WantedAnimName](const FBRT_GodotAnimParseResult& Anim) { return Anim.AnimName == WantedAnimName; });
+	if (!Found)
+	{
+		UE_LOG(LogBRTAnim, Warning, TEXT("ImportFromScnFile: 场景 %s 中未找到动画 \"%s\""), *ScnFilePath, *WantedAnimName.ToString());
+		return false;
+	}
+
+	ApplyParseResult(*Found);
 	return true;
 }
