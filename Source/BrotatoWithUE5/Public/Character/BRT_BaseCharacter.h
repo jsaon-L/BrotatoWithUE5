@@ -9,6 +9,7 @@
 #include "BRT_BaseCharacter.generated.h"
 
 
+class UPaperSpriteComponent;
 class UBRT_PaperDollAnimComponent;
 struct FOnAttributeChangeData;
 class UAttributeSet;
@@ -37,6 +38,13 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "BRT|Anim")
 	TObjectPtr<UBRT_PaperDollAnimComponent> PaperDollAnim;
 
+	
+	UPROPERTY(VisibleAnywhere, Category = "BRT|Anim")
+	TObjectPtr<USceneComponent> SpriteRoot;
+	
+	/** 身体精灵（动画 Root 目标），腿部关节挂其下并跟随根缩放 */
+	UPROPERTY(VisibleAnywhere, Category = "BRT|Anim")
+	TObjectPtr<UPaperSpriteComponent> PaperDollBody;
 
 private:
 
@@ -57,7 +65,8 @@ public:
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	virtual UAttributeSet* GetAttributeSet() const;
 
-
+	virtual void Tick(float DeltaTime) override;
+	
 protected:
 	
 	void OnHealthChanged(const FOnAttributeChangeData& Data);

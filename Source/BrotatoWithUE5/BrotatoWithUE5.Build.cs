@@ -25,7 +25,8 @@ public class BrotatoWithUE5 : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			
+			// 批量导入后刷新资产注册表（编辑器可见性）
+			"AssetRegistry"
 		});
 
 		// Uncomment if you are using Slate UI

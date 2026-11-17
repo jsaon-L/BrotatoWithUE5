@@ -3,9 +3,11 @@
 
 #include "Character/BRT_BaseCharacter.h"
 
+#include "PaperSpriteComponent.h"
 #include "Animation/BRT_PaperDollAnimComponent.h"
 #include "BrotatoGAS/BRT_AbilitySystemComponent.h"
 #include "BrotatoGAS/AttributeSet/BRT_AttributeSet.h"
+#include "Components/CapsuleComponent.h"
 
 
 // Sets default values
@@ -25,6 +27,17 @@ ABRT_BaseCharacter::ABRT_BaseCharacter()
 	AttributeSet = CreateDefaultSubobject<UBRT_AttributeSet>("AttributeSet");
 	
 	PaperDollAnim = CreateDefaultSubobject<UBRT_PaperDollAnimComponent>(TEXT("PaperDollAnim"));
+
+	//用来显示的组件的根
+	SpriteRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SpriteRoot"));
+	SpriteRoot->SetupAttachment(GetCapsuleComponent());
+	
+	// 纸娃娃层级：身体精灵（Root）→ 腿部关节（LegL/LegR）→ 腿部精灵。
+	// 位置按 Godot player.tscn 换算：Godot(x,y) -> UE(x,0,-y)，PPU=1（与腿部精灵 PixelsPerUnrealUnit 一致）。
+	PaperDollBody = CreateDefaultSubobject<UPaperSpriteComponent>(TEXT("PaperDollBody"));
+	PaperDollBody->SetupAttachment(SpriteRoot);
+	PaperDollBody->SetRelativeLocation(FVector(0.f, 0.f, 0.f));
+	PaperDollBody->SetTranslucentSortPriority(1); // 身体渲染在腿之前（Godot show_behind_parent）
 
 }
 
@@ -62,6 +75,27 @@ UAbilitySystemComponent* ABRT_BaseCharacter::GetAbilitySystemComponent() const
 UAttributeSet* ABRT_BaseCharacter::GetAttributeSet() const
 {
 	return  AttributeSet;
+}
+
+void ABRT_BaseCharacter::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+	
+	
+	//反转朝向移动的方向
+	const double velocityY = GetVelocity().Y;
+	// if (bAlive && velocityY != 0)
+	{
+		if (velocityY > 0)
+		{
+			SpriteRoot->SetRelativeScale3D(FVector::One());
+		}
+		else if (velocityY < 0)
+		{
+			SpriteRoot->SetRelativeScale3D(FVector(-1,1,1));
+		}
+	}
+
 }
 
 
