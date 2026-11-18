@@ -19,6 +19,7 @@ class UBRT_AttributeSet : public UAttributeSet
 {
 	GENERATED_BODY()
 public:
+	UBRT_AttributeSet();
 	
 	virtual void PreAttributeChange(const FGameplayAttribute& Attribute, float& NewValue) override;
 	virtual void PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data) override;
