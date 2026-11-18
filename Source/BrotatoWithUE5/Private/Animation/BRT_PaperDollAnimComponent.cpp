@@ -75,8 +75,7 @@ void UBRT_PaperDollAnimComponent::PlayAnim(UBRT_PaperDollAnimAsset* NewAnim)
 
 	CurrentAnim = NewAnim;
 	TimeInAnim = 0.f;
-	PrevPlayTime = -KINDA_SMALL_NUMBER;  // 确保 time=0 的事件能被触发
-	NextEventIndex = 0;
+	bFireEventsAtStart = true;  // 首次 Tick 的事件区间包含起点，确保 time=0 的事件能被触发
 	RuntimeTracks.Reset();
 
 	if (!IsValid(CurrentAnim))
@@ -129,6 +128,12 @@ void UBRT_PaperDollAnimComponent::SetPaused(bool bPausedIn)
 
 void UBRT_PaperDollAnimComponent::SetPlayRate(float NewPlayRate)
 {
+	// 事件区间按时间单调递增计算，不支持倒放；负值按 0（暂停推进）处理
+	if (NewPlayRate < 0.f)
+	{
+		UE_LOG(LogBRTAnim, Warning, TEXT("SetPlayRate: 不支持负播放速率(%.3f)，已按 0 处理"), NewPlayRate);
+		NewPlayRate = 0.f;
+	}
 	PlayRate = NewPlayRate;
 }
 
@@ -141,22 +146,25 @@ void UBRT_PaperDollAnimComponent::TickComponent(float DeltaTime, ELevelTick Tick
 		return;
 	}
 
-	PrevPlayTime = TimeInAnim;
-	TimeInAnim += DeltaTime * PlayRate;
-
 	const float Length = CurrentAnim->Length;
+	const float PrevTime = TimeInAnim;
+	float NewTime = PrevTime + DeltaTime * PlayRate;
+
+	// 用折算前的时间判断是否越过循环点，而不是事后比较 TimeInAnim < PrevTime
+	bool bWrapped = false;
 	if (CurrentAnim->bLoop && Length > SMALL_NUMBER)
 	{
-		TimeInAnim = FMath::Fmod(TimeInAnim, Length);
-		if (TimeInAnim < 0.f)
+		if (NewTime >= Length)
 		{
-			TimeInAnim += Length;
+			bWrapped = true;
+			NewTime = FMath::Fmod(NewTime, Length);
 		}
 	}
 	else
 	{
-		TimeInAnim = FMath::Clamp(TimeInAnim, 0.f, Length);
+		NewTime = FMath::Clamp(NewTime, 0.f, Length);
 	}
+	TimeInAnim = NewTime;
 
 	// 组装变换：Rest 为基，被轨道驱动的通道覆盖
 	const int32 NumTargets = BoundTargets.Num();
@@ -207,53 +215,53 @@ void UBRT_PaperDollAnimComponent::TickComponent(float DeltaTime, ELevelTick Tick
 		Component->SetRelativeScale3D(Scales[TargetIdx]);
 	}
 
-	// 动画事件触发
+	// 动画事件触发：先取走「首帧包含起点」标志，避免事件回调里再次 PlayAnim 时被误清
+	const bool bIncludeStart = bFireEventsAtStart;
+	bFireEventsAtStart = false;
+
 	if (CurrentAnim->Events.Num() > 0)
 	{
-		// 循环回绕：两阶段触发，先触发 [PrevPlayTime, Length] 区间，再触发 [0, TimeInAnim] 区间
-		if (TimeInAnim < PrevPlayTime)
+		if (bWrapped)
 		{
-			// 第一阶段：触发回绕前的事件 [PrevPlayTime, Length]
-			for (int32 EventIdx = NextEventIndex; EventIdx < CurrentAnim->Events.Num(); ++EventIdx)
+			// 越过循环点：先触发 (PrevTime, Length]，再触发新一圈的 [0, TimeInAnim]（含 time=0 的事件）
+			UBRT_PaperDollAnimAsset* AnimBeforeEvents = CurrentAnim;
+			FireEventsInRange(PrevTime, Length, bIncludeStart);
+			if (CurrentAnim == AnimBeforeEvents)
 			{
-				const FBRT_PaperDollAnimEvent& Event = CurrentAnim->Events[EventIdx];
-				if (Event.Time > PrevPlayTime && Event.Time <= CurrentAnim->Length)
-				{
-					OnAnimEvent.Broadcast(Event.EventName, Event.Time, Event.Args);
-				}
-			}
-			// 第二阶段：从头扫描触发 [0, TimeInAnim] 区间事件
-			NextEventIndex = 0;
-			for (int32 EventIdx = 0; EventIdx < CurrentAnim->Events.Num(); ++EventIdx)
-			{
-				const FBRT_PaperDollAnimEvent& Event = CurrentAnim->Events[EventIdx];
-				if (Event.Time > 0.f && Event.Time <= TimeInAnim)
-				{
-					OnAnimEvent.Broadcast(Event.EventName, Event.Time, Event.Args);
-					NextEventIndex = EventIdx + 1;
-				}
-				else if (Event.Time > TimeInAnim)
-				{
-					break;
-				}
+				FireEventsInRange(0.f, TimeInAnim, /*bIncludeStart*/ true);
 			}
 		}
 		else
 		{
-			// 正常播放：顺序触发 [PrevPlayTime, TimeInAnim] 区间事件
-			for (int32 EventIdx = NextEventIndex; EventIdx < CurrentAnim->Events.Num(); ++EventIdx)
-			{
-				const FBRT_PaperDollAnimEvent& Event = CurrentAnim->Events[EventIdx];
-				if (Event.Time > PrevPlayTime && Event.Time <= TimeInAnim)
-				{
-					OnAnimEvent.Broadcast(Event.EventName, Event.Time, Event.Args);
-					NextEventIndex = EventIdx + 1;
-				}
-				else if (Event.Time > TimeInAnim)
-				{
-					break;
-				}
-			}
+			FireEventsInRange(PrevTime, TimeInAnim, bIncludeStart);
+		}
+	}
+}
+
+void UBRT_PaperDollAnimComponent::FireEventsInRange(float RangeStart, float RangeEnd, bool bIncludeStart)
+{
+	UBRT_PaperDollAnimAsset* Anim = CurrentAnim;
+	if (!IsValid(Anim))
+	{
+		return;
+	}
+
+	// 整表扫描：事件数量极少，换来不依赖 Events 排序（多条 method 轨道导入后顺序不保证按时间）
+	for (int32 EventIdx = 0; EventIdx < Anim->Events.Num(); ++EventIdx)
+	{
+		const FBRT_PaperDollAnimEvent& Event = Anim->Events[EventIdx];
+		const bool bAfterStart = bIncludeStart ? (Event.Time >= RangeStart) : (Event.Time > RangeStart);
+		if (!bAfterStart || Event.Time > RangeEnd)
+		{
+			continue;
+		}
+
+		OnAnimEvent.Broadcast(Event.EventName, Event.Time, Event.Args);
+
+		// 回调里切了动画：旧动画剩余事件不再触发
+		if (CurrentAnim != Anim)
+		{
+			return;
 		}
 	}
 }
