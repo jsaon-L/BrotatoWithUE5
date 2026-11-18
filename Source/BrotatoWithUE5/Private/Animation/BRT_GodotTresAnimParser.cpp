@@ -831,6 +831,12 @@ bool FBRT_GodotTresAnimParser::ParseTresText(const FString& TresText, const FBRT
 		}
 	}
 
+	// 多条 method 轨道按轨道序号依次追加，事件顺序不等于时间顺序；这里稳定排序，资产内事件按时间升序
+	OutResult.Events.StableSort([](const FBRT_PaperDollAnimEvent& A, const FBRT_PaperDollAnimEvent& B)
+	{
+		return A.Time < B.Time;
+	});
+
 	// 汇总 Warning（带计数）
 	if (TrimmedKeyCount > 0)
 	{

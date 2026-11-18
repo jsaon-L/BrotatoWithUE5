@@ -110,11 +110,16 @@ private:
 	TMap<FName, int32> TargetNameToIndex;
 	TArray<FTrackRuntime> RuntimeTracks;
 
+	/**
+	 * 触发 (RangeStart, RangeEnd] 区间内的动画事件（bIncludeStart 为 true 时区间为 [RangeStart, RangeEnd]）。
+	 * 每次整表扫描、不依赖 Events 的排列顺序；事件回调里切换了动画则立即中止本轮剩余事件。
+	 */
+	void FireEventsInRange(float RangeStart, float RangeEnd, bool bIncludeStart);
+
 	float TimeInAnim = 0.f;
 	float PlayRate = 1.f;
 	bool bPaused = false;
 
-	// 预留事件游标
-	int32 NextEventIndex = 0;
-	float PrevPlayTime = 0.f;
+	/** 刚切换动画、尚未 Tick 过：下一次 Tick 的事件区间需要包含起点，保证 Time = 0 的事件能触发 */
+	bool bFireEventsAtStart = false;
 };
